@@ -156,21 +156,64 @@ MC2000.LedManager = (function() {
             var statusByte = normalize(status);
             decks.forEach(function(d) { send(d, def.code, statusByte); });
         },
+        
+        /**
+         * Set multiple LEDs at once using a name->status map.
+         * More efficient than individual set() calls when updating many LEDs.
+         * 
+         * Available LED names (from MC2000.leds):
+         *   Transport: 'play', 'cue', 'sync', 'keylock'
+         *   Hotcues: 'cue1', 'cue2', 'cue3', 'cue4'
+         *   Loops: 'loopin', 'loopout', 'autoloop'
+         *   FX: 'fx1_1', 'fx1_2', 'fx1_3', 'fx2_1', 'fx2_2', 'fx2_3'
+         *   Samplers: 'sampler1' through 'sampler8', 'samp1_l' through 'samp4_r', 'samples_l', 'samples_r'
+         *   Modes: 'vinylmode', 'shiftlock', 'samplemode'
+         *   Monitor: 'monitorcue_l', 'monitorcue_r'
+         * 
+         * Status values: 'on', 'off', 'blink', or numeric 0/1/2, or boolean true/false
+         * 
+         * @param {Object} map - Object mapping LED names to status values
+         * @example
+         *   MC2000.LedManager.bulk({play: 'on', cue: 'off', sync: 'blink'});
+         */
         bulk: function(map) {
             var self = this;
             Object.keys(map).forEach(function(n) { self.set(n, map[n]); });
         },
-        reflect: function(name, value) {
-            this.set(name, value ? 'on' : 'off');
+        
+        /**
+         * Reflect a Mixxx engine control value to an LED (boolean on/off).
+         * Converts truthy/falsy values to LED on/off states. This is the primary
+         * method for output() handlers in Components that need to sync LED state
+         * with Mixxx engine controls.
+         * 
+         * Typically used in engine.makeConnection() callbacks to automatically
+         * update LEDs when Mixxx control values change (e.g., play_indicator,
+         * cue_indicator, sync_enabled, pfl, etc.).
+         * 
+         * @param {string} name - LED name from MC2000.leds
+         * @param {*} value - Truthy (LED on) or falsy (LED off) value from Mixxx engine
+         * @param {Object} [opts] - Optional {deck: 1|2} to target specific deck
+         * @example
+         *   // In a component output handler:
+         *   this.output = function(value) {
+         *       MC2000.LedManager.reflect("play", value, {deck: this.deckNumber});
+         *   };
+         *   this.connect = function() {
+         *       engine.makeConnection(this.group, "play_indicator", this.output.bind(this));
+         *   };
+         */
+        reflect: function(name, value, opts) {
+            this.set(name, value ? 'on' : 'off', opts);
         },
-        blink: function(name, period, cycles) {
-            period = period || 300;
+        blink: function(name, period, cycles, opts) {
+            period = period || 500;
             cycles = cycles || 6; // total state flips
             var on = true;
             var fired = 0;
             var self = this;
             var timerId = engine.beginTimer(period, function() {
-                self.set(name, on ? 'on' : 'off');
+                self.set(name, on ? 'on' : 'off', opts);
                 on = !on;
                 fired++;
                 if (fired >= cycles) {
@@ -188,130 +231,27 @@ MC2000.LedManager = (function() {
         raw: function(deck, code, status) { // bridge for legacy helpers
             send(deck, code, normalize(status));
         },
+        setRaw: function(name, statusByte, opts) {
+            // Direct status byte control (for PFL/monitorcue alternate protocol)
+            var def = LED_MAP[name];
+            if (!def) return;
+            var decks = (opts && opts.deck) ? [opts.deck] : def.decks;
+            decks.forEach(function(d) { send(d, def.code, statusByte); });
+        },
+        reflectAlt: function(name, value, opts) {
+            // Alternate protocol for PFL buttons (0x50=ON, 0x51=OFF)
+            this.setRaw(name, value ? 0x50 : 0x51, opts);
+        },
         _dumpCache: function() { return JSON.parse(JSON.stringify(cache)); },
         _LED_MAP: LED_MAP
     };
 })();
 
-// NOTE: Future stages can migrate individual component output handlers
-// from MC2000.setLed(...) calls to MC2000.LedManager.reflect()/set().
-// Keeping legacy functions intact for incremental adoption.
 
-MC2000.setLed = function(deck,led,status) {
-	var ledStatus = 0x4B; // Default OFF
-	switch (status) {
-		case 0: 	ledStatus = 0x4B; break; // OFF
-		case false: ledStatus = 0x4B; break; // OFF 
-    	case 1: 	ledStatus = 0x4A; break; // ON
-		case true: 	ledStatus = 0x4A; break; // ON
-    	case 2: 	ledStatus = 0x4C; break; // BLINK
-    	default: 	break;
-	}
-	midi.sendShortMsg(0xB0+(deck-1), ledStatus, led);
-};
 
-MC2000.setLed2 = function(deck,led,status) {
-	midi.sendShortMsg(0xB0+(deck-1), status==1 ? 0x50 : 0x51, led);
-};
-
-MC2000.allLed2Default = function () {
-    // Delegate bulk OFF to new helper (includes monitor cue LEDs)
-    // Ignore returned promise; safe during init
-    MC2000.setAllLeds(false);
-    // Re-enable vinylmode LEDs to match original default
-    MC2000.setLed(1, MC2000.leds.vinylmode, 1);
-    MC2000.setLed(2, MC2000.leds.vinylmode, 1);
-    if (MC2000.debugMode) MC2000.debugLog("allLed2Default: reset via setAllLeds(false) then vinylmode ON");
-};
 
 /**
- * Asynchronously set all controller LEDs ON or OFF.
- * @param {boolean} on - true to turn all LEDs on, false to turn them off.
- * @param {object} [opts] - Optional flags.
- * @param {boolean} [opts.blink=false] - If true and on==true, use blink state (status=2) where supported.
- * @returns {Promise<number>} Resolves to the status code applied (0=OFF,1=ON,2=BLINK).
- *
- * Notes:
- * - Uses MC2000.setLed for regular LEDs and MC2000.setLed2 for monitor cue LEDs.
- * - Applies to both decks (1 and 2) for all standard LEDs.
- * - Blink state may not be supported by every LED; hardware testing required.
- * - Safe to call while playing; no interaction with Mixxx engine state.
- *
- * Example:
- *   await MC2000.setAllLeds(true);       // turn everything ON
- *   await MC2000.setAllLeds(false);      // turn everything OFF
- *   await MC2000.setAllLeds(true,{blink:true}); // attempt blink
- */
-MC2000.setAllLeds = function(on, opts) {
-    var blink = opts && opts.blink;
-    var status = on ? (blink ? 2 : 1) : 0;
-    try {
-        for (var name in MC2000.leds) {
-            var code = MC2000.leds[name];
-            if (name === "monitorcue_l") {
-                MC2000.setLed2(1, code, on ? 1 : 0);
-                continue;
-            }
-            if (name === "monitorcue_r") {
-                MC2000.setLed2(2, code, on ? 1 : 0);
-                continue;
-            }
-            // Regular LED: set for both decks
-            MC2000.setLed(1, code, status);
-            MC2000.setLed(2, code, status);
-        }
-        if (MC2000.debugMode) MC2000.debugLog("setAllLeds: on=" + on + " status=" + status + (blink?" (blink)":""));
-    } catch (e) {
-        if (MC2000.debugMode) MC2000.debugLog("setAllLeds error: " + e);
-    }
-    // Return applied status for potential chaining logic
-    return status;
-};
-
-/**
- * Blink both vinyl mode LEDs for a specified duration to indicate an error.
- * Intended for signaling missing dependencies (e.g. components.js not loaded).
- * Manually toggles LEDs every 500ms instead of using hardware blink state.
- * @param {number} [durationMs=5000] Duration to blink in milliseconds.
- */
-MC2000.blinkVinylModeError = function(durationMs) {
-    durationMs = (typeof durationMs === 'number' && durationMs > 0) ? durationMs : 5000;
-    if (typeof engine === 'undefined' || !engine.beginTimer) {
-        if (MC2000.debugMode) MC2000.debugLog("blinkVinylModeError: timer API missing, cannot blink");
-        return;
-    }
-    
-    if (MC2000.debugMode) MC2000.debugLog("blinkVinylModeError: begin manual blink for " + durationMs + "ms");
-    
-    var blinkInterval = 250; // Toggle every 250ms
-    var elapsed = 0;
-    var ledState = false; // Start with OFF
-    
-    // Initial state: turn LEDs off
-    MC2000.setLed(1, MC2000.leds.vinylmode, 0);
-    MC2000.setLed(2, MC2000.leds.vinylmode, 0);
-    
-    // Create repeating timer to toggle LEDs
-    var timerId = engine.beginTimer(blinkInterval, function() {
-        elapsed += blinkInterval;
-        
-        if (elapsed >= durationMs) {
-            // Stop blinking and restore solid ON state
-            engine.stopTimer(timerId);
-            MC2000.setLed(1, MC2000.leds.vinylmode, 1);
-            MC2000.setLed(2, MC2000.leds.vinylmode, 1);
-            if (MC2000.debugMode) MC2000.debugLog("blinkVinylModeError: ended blink, vinylmode solid ON");
-        } else {
-            // Toggle LED state
-            ledState = !ledState;
-            MC2000.setLed(1, MC2000.leds.vinylmode, ledState ? 1 : 0);
-            MC2000.setLed(2, MC2000.leds.vinylmode, ledState ? 1 : 0);
-        }
-    }, false); // false = repeating timer
-};
-
-/**
- * Manually blink the shift lock LED every 500ms for the specified duration.
+ * Blink the shift lock LED for the specified duration using LED Manager API.
  * Used for transient feedback (e.g. indicating a mode toggle).
  * @param {number} [durationMs=2000] How long to blink in milliseconds.
  */
@@ -321,26 +261,17 @@ MC2000.blinkShiftLock = function(durationMs) {
         if (MC2000.debugMode) MC2000.debugLog("blinkShiftLock: timer API missing, cannot blink");
         return;
     }
+    
+    // Calculate cycles: duration / interval / 2 (on+off = 1 blink cycle)
     var blinkInterval = 500;
-    var elapsed = 0;
-    var ledState = false;
-    // Ensure LED starts OFF
-    MC2000.setLed(1, MC2000.leds.shiftlock, 0);
-    MC2000.setLed(2, MC2000.leds.shiftlock, 0);
-    var timerId = engine.beginTimer(blinkInterval, function(){
-        elapsed += blinkInterval;
-        if (elapsed >= durationMs) {
-            engine.stopTimer(timerId);
-            // Leave LED OFF at end
-            MC2000.setLed(1, MC2000.leds.shiftlock, 0);
-            MC2000.setLed(2, MC2000.leds.shiftlock, 0);
-            if (MC2000.debugMode) MC2000.debugLog("blinkShiftLock: ended blink");
-        } else {
-            ledState = !ledState;
-            MC2000.setLed(1, MC2000.leds.shiftlock, ledState ? 1 : 0);
-            MC2000.setLed(2, MC2000.leds.shiftlock, ledState ? 1 : 0);
-        }
-    }, false);
+    var cycles = Math.floor(durationMs / blinkInterval);
+    
+    // Use LedManager.blink for clean implementation
+    MC2000.LedManager.blink("shiftlock", blinkInterval, cycles);
+    
+    if (MC2000.debugMode) {
+        MC2000.debugLog("blinkShiftLock: blinking for " + durationMs + "ms (" + (cycles/2) + " cycles)");
+    }
 };
 
 //////////////////////////////
@@ -458,84 +389,72 @@ MC2000.init = function(id) {
     MC2000.id = id;
     MC2000.log("Init controller " + id);
     
-    // Check if components library is loaded - abort if missing
+    // Check if required libraries are loaded - abort if missing
+    var missingLibraries = [];
+    if (typeof _ === "undefined") {
+        missingLibraries.push("lodash");
+    }
     if (typeof components === "undefined") {
-        MC2000.log("FATAL ERROR: Components library not loaded!");
-        MC2000.blinkVinylModeError(10000); // Blink for 10 seconds to indicate error
+        missingLibraries.push("components");
+    }
+    
+    if (missingLibraries.length > 0) {
+        MC2000.log("FATAL ERROR: Missing required libraries: " + missingLibraries.join(", "));
+        // Blink vinylmode LED 5 times to indicate error, then turn off
+        MC2000.LedManager.blink('vinylmode', 500, 10); // 10 flips = 5 blinks
+        
+        // Turn off vinylmode LED after blinking completes (5 seconds)
+        engine.beginTimer(5100, function() {
+            MC2000.LedManager.set('vinylmode', 'off');
+        }, true);
+     
         return; // Exit init - controller will not function
     }
     
-    // Brief LED flash to confirm init started
-    MC2000.setAllLeds(true);
+    // Brief LED flash to confirm init started - turn all LEDs on
+    var allLedsMap = {};
+    Object.keys(MC2000.leds).forEach(function(name) {
+        allLedsMap[name] = 'on';
+    });
+
+    MC2000.LedManager.bulk(allLedsMap);
      
     
     // Build Components-based structure with LED connections
     MC2000.buildComponents();
-    
+
     // Build master controls
     MC2000.buildMasterControls();
-    
+
     // Build FX units
     MC2000.buildFxUnits();
-    
+
     // Build library controls
     MC2000.buildLibraryControls();
-    
+
     // Build sampler decks
     MC2000.buildSamplerDecks();
 
+
     // Set default mixer levels (safe startup values)
     MC2000.setDefaultMixerLevels();
-
-    //all leds should be on
-    // Replace busy wait with 500 ms async delay that defers final LED reset + PFL + log
-    var _origAllLed2Default = MC2000.allLed2Default;
-    var _queuedSetValues = [];
-    var _origSetValue = engine.setValue;
-    var _queuedLogs = [];
-    var _origLog = MC2000.log;
-
-    // Queue engine.setValue calls made after this point (e.g. PFL enable) until timer completes
-    engine.setValue = function(group, key, value) {
-        _queuedSetValues.push({group: group, key: key, value: value});
-    };
-
-    // Queue log messages (e.g. final init success)
-    MC2000.log = function(msg) {
-        _queuedLogs.push(msg);
-    };
-
-    // Wrap allLed2Default so the actual reset happens after 500 ms, then flush queued ops
-    MC2000.allLed2Default = function() {
-        engine.beginTimer(500, function() {
-            _origAllLed2Default();
-            // Flush queued setValue calls
-            for (var i = 0; i < _queuedSetValues.length; i++) {
-                var q = _queuedSetValues[i];
-                _origSetValue(q.group, q.key, q.value);
-            }
-            // Flush queued logs
-            for (var j = 0; j < _queuedLogs.length; j++) {
-                _origLog(_queuedLogs[j]);
-            }
-            // Restore originals
-            engine.setValue = _origSetValue;
-            MC2000.log = _origLog;
-        }, true); // one-shot
-    };
-    // Initialize all LEDs to default state
-    MC2000.allLed2Default();
-
-    // Enable PFL/headphone cue on deck 1
-    engine.setValue("[Channel1]", "pfl", 1);
     
-    MC2000.log("Controller initialized successfully");
+    // After 1 second delay, reset all LEDs to defaults and enable PFL on deck 1
+   
+    engine.beginTimer(1000, function() {
+        MC2000.LedManager.resetDefaults();
+        
+        // Enable PFL/headphone cue on deck 1 after LED reset
+        engine.setValue("[Channel1]", "pfl", 1);
+        
+        MC2000.log("Controller initialized successfully");
+    }, true); // one-shot timer
 };
 
 MC2000.shutdown = function() {
     MC2000.log("Shutdown controller");
     // Turn off all LEDs
-    MC2000.allLed2Default();
+    MC2000.LedManager.resetDefaults();
 };
 //////////////////////////////
 // Shift button handler: push-to-hold logic
@@ -556,8 +475,7 @@ MC2000.updateShiftState = function() {
         });
     }
     // Update shift lock LED: ON if locked, OFF if not
-    MC2000.setLed(1, MC2000.leds.shiftlock, MC2000.shiftLock ? 1 : 0);
-    MC2000.setLed(2, MC2000.leds.shiftlock, MC2000.shiftLock ? 1 : 0);
+    MC2000.LedManager.reflect("shiftlock", MC2000.shiftLock);
 };
 
 // Helper: get current effective shift state (held or locked)
@@ -624,10 +542,7 @@ MC2000.FxUnit = function(unitNumber) {
             self.effects[effectIndex].toggle.output = function(value) {
                 if (MC2000.leds[ledKey] !== undefined) {
                     // FX buttons on both units use deck 1 (status 0xB0)
-                    //MC2000.setLed(1, MC2000.leds[ledKey], value ? 1 : 0);
-                    this.sync.output = function(value) {
-                            MC2000.LedManager.reflect("sync", value);
-};                    //MC2000.setLed(1, MC2000.leds[ledKey], value ? 1 : 0);
+                    MC2000.LedManager.reflect(ledKey, value, {deck: 1});
                 }
                 if (MC2000.debugMode) {
                     MC2000.debugLog("FX" + self.unitNumber + " Effect" + effectIndex + " LED: " + value);
@@ -753,7 +668,7 @@ MC2000.SamplerDeck = function(samplerNumber) {
     this.playButton.output = function(value) {
         var ledName = "sampler" + self.samplerNumber;
         if (MC2000.leds[ledName] !== undefined) {
-            MC2000.setLed(self.deckNumber, MC2000.leds[ledName], value ? 1 : 0);
+            MC2000.LedManager.reflect(ledName, value, {deck: self.deckNumber});
         }
         if (MC2000.debugMode) MC2000.debugLog("Sampler" + self.samplerNumber + " play LED: " + value);
     };
@@ -793,7 +708,7 @@ MC2000.Deck = function(group) {
         type: components.Button.prototype.types.toggle,
     });
     this.play.output = function(value) {
-        MC2000.setLed(self.deckNumber, MC2000.leds.play, value ? 1 : 0);
+        MC2000.LedManager.reflect("play", value, {deck: self.deckNumber});
     };
     this.play.connect = function() {
         engine.makeConnection(this.group, "play_indicator", this.output.bind(this));
@@ -806,7 +721,7 @@ MC2000.Deck = function(group) {
         type: components.Button.prototype.types.cue,
     });
     this.cue.output = function(value) {
-        MC2000.setLed(self.deckNumber, MC2000.leds.cue, value ? 1 : 0);
+        MC2000.LedManager.reflect("cue", value, {deck: self.deckNumber});
     };
     this.cue.connect = function() {
         engine.makeConnection(this.group, "cue_indicator", this.output.bind(this));
@@ -867,7 +782,8 @@ MC2000.Deck = function(group) {
         }
     };
     this.sync.output = function(value) {
-        MC2000.setLed(self.deckNumber, MC2000.leds.sync, value ? 1 : 0);
+        MC2000.LedManager.reflect("sync", value, {deck: self.deckNumber});
+        //MC2000.setLed(self.deckNumber, MC2000.leds.sync, value ? 1 : 0);
     };
     this.sync.connect = function() {
         engine.makeConnection(this.group, "sync_enabled", this.output.bind(this));
@@ -903,7 +819,7 @@ MC2000.Deck = function(group) {
     };
     this.keylock.unshift();
     this.keylock.output = function(value) {
-        MC2000.setLed(self.deckNumber, MC2000.leds.keylock, value ? 1 : 0);
+        MC2000.LedManager.reflect("keylock", value, {deck: self.deckNumber});
     };
     this.keylock.connect = function() {
         engine.makeConnection(this.group, "keylock", this.output.bind(this));
@@ -916,9 +832,9 @@ MC2000.Deck = function(group) {
         type: components.Button.prototype.types.toggle,
     });
     this.pfl.output = function(value) {
-        // Use setLed2 for monitor cue as it has different LED codes per channel
+        // Use reflectAlt for monitor cue as it has alternate LED protocol (0x50/0x51)
         var ledName = (self.deckNumber === 1) ? "monitorcue_l" : "monitorcue_r";
-        MC2000.setLed2(self.deckNumber, MC2000.leds[ledName], value ? 1 : 0);
+        MC2000.LedManager.reflectAlt(ledName, value, {deck: self.deckNumber});
     };
     this.pfl.connect = function() {
         engine.makeConnection(this.group, "pfl", this.output.bind(this));
@@ -951,14 +867,14 @@ MC2000.Deck = function(group) {
         MC2000.sampleMode[group] = !MC2000.sampleMode[group];
         
         // Update LED
-        MC2000.setLed(self.deckNumber, MC2000.leds.samplemode, MC2000.sampleMode[group] ? 1 : 0);
+        MC2000.LedManager.reflect("samplemode", MC2000.sampleMode[group], {deck: self.deckNumber});
         
         if (MC2000.debugMode) {
             MC2000.debugLog(group + " sample mode: " + (MC2000.sampleMode[group] ? "ON" : "OFF"));
         }
     };
     this.sampleModeToggle.output = function(value) {
-        MC2000.setLed(self.deckNumber, MC2000.leds.samplemode, value ? 1 : 0);
+        MC2000.LedManager.reflect("samplemode", value, {deck: self.deckNumber});
     };
     this.sampleModeToggle.connect = function() {
         // Initialize LED state
@@ -1123,7 +1039,7 @@ MC2000.Deck = function(group) {
     };
     this.loopInBtn.unshift();
     this.loopInBtn.output = function(value) {
-        MC2000.setLed(self.deckNumber, MC2000.leds.loopin, value ? 1 : 0);
+        MC2000.LedManager.reflect("loopin", value, {deck: self.deckNumber});
     };
     this.loopInBtn.connect = function() {
         engine.makeConnection(this.group, "loop_enabled", this.output.bind(this));
@@ -1156,7 +1072,7 @@ MC2000.Deck = function(group) {
     };
     this.loopOutBtn.unshift();
     this.loopOutBtn.output = function(value) {
-        MC2000.setLed(self.deckNumber, MC2000.leds.loopout, value ? 1 : 0);
+        MC2000.LedManager.reflect("loopout", value, {deck: self.deckNumber});
     };
     this.loopOutBtn.connect = function() {
         engine.makeConnection(this.group, "loop_enabled", this.output.bind(this));
@@ -1244,7 +1160,7 @@ MC2000.Deck = function(group) {
     };
     this.reloopExitBtn.unshift();
     this.reloopExitBtn.output = function(value) {
-        MC2000.setLed(self.deckNumber, MC2000.leds.autoloop, value ? 1 : 0);
+        MC2000.LedManager.reflect("autoloop", value, {deck: self.deckNumber});
     };
     this.reloopExitBtn.connect = function() {
         engine.makeConnection(this.group, "loop_enabled", this.output.bind(this));
@@ -1264,7 +1180,7 @@ MC2000.Deck = function(group) {
         // Custom output for LED feedback
         (function(index, deckNum, ledName, hotcue) {
             hotcue.output = function(value) {
-                MC2000.setLed(deckNum, MC2000.leds[ledName], value ? 1 : 0);
+                MC2000.LedManager.reflect(ledName, value, {deck: deckNum});
             };
             
             hotcue.connect = function() {
