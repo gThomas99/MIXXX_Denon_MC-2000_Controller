@@ -101,6 +101,102 @@ MC2000.leds = {
 	samplemode: 	0x1A
 };
 
+// ------------------------------------------------------------
+// LED State & Manager (Incremental Skeleton Refactor Stage 1)
+// ------------------------------------------------------------
+// Purpose: Provide a unified, cache-aware API for LED control while
+// leaving existing legacy helpers (setLed/setLed2/allLed2Default) intact.
+// Subsequent stages can migrate individual calls to LedManager.set()/reflect().
+// ------------------------------------------------------------
+
+MC2000.LED_STATE = { OFF: 0x4B, ON: 0x4A, BLINK: 0x4C };
+
+MC2000.LedManager = (function() {
+    var cache = {}; // key: deck|code -> status byte
+
+    // Build a table mapping LED symbolic names to their code and deck affinity.
+    var LED_MAP = {};
+    Object.keys(MC2000.leds).forEach(function(name) {
+        var code = MC2000.leds[name];
+        var decks;
+        // Heuristics for deck-specific LEDs (sampler banks, monitor cues, suffixed keys)
+        if (/(_l|monitorcue_l)$/i.test(name)) {
+            decks = [1];
+        } else if (/(_r|monitorcue_r)$/i.test(name)) {
+            decks = [2];
+        } else if (/^sampler[1-4]$/.test(name)) {
+            decks = [1];
+        } else if (/^sampler[5-8]$/.test(name)) {
+            decks = [2];
+        } else {
+            // Shared indicator across both decks (e.g. sync, keylock, vinylmode)
+            decks = [1, 2];
+        }
+        LED_MAP[name] = { code: code, decks: decks };
+    });
+
+    function normalize(status) {
+        if (status === 0 || status === false || status === 'off') return MC2000.LED_STATE.OFF;
+        if (status === 2 || status === 'blink') return MC2000.LED_STATE.BLINK;
+        return MC2000.LED_STATE.ON; // default for truthy / 1 / true / 'on'
+    }
+    function key(deck, code) { return deck + '|' + code; }
+    function send(deck, code, statusByte) {
+        var k = key(deck, code);
+        if (cache[k] === statusByte) return; // suppress redundant MIDI traffic
+        cache[k] = statusByte;
+        midi.sendShortMsg(0xB0 + (deck - 1), statusByte, code);
+    }
+
+    return {
+        set: function(name, status, opts) {
+            var def = LED_MAP[name];
+            if (!def) return;
+            var decks = (opts && opts.deck) ? [opts.deck] : def.decks;
+            var statusByte = normalize(status);
+            decks.forEach(function(d) { send(d, def.code, statusByte); });
+        },
+        bulk: function(map) {
+            var self = this;
+            Object.keys(map).forEach(function(n) { self.set(n, map[n]); });
+        },
+        reflect: function(name, value) {
+            this.set(name, value ? 'on' : 'off');
+        },
+        blink: function(name, period, cycles) {
+            period = period || 300;
+            cycles = cycles || 6; // total state flips
+            var on = true;
+            var fired = 0;
+            var self = this;
+            var timerId = engine.beginTimer(period, function() {
+                self.set(name, on ? 'on' : 'off');
+                on = !on;
+                fired++;
+                if (fired >= cycles) {
+                    engine.stopTimer(timerId);
+                }
+            });
+        },
+        resetDefaults: function() {
+            // Turn all LEDs OFF then enable vinylmode (matching legacy default intent)
+            var offMap = {};
+            Object.keys(LED_MAP).forEach(function(n) { offMap[n] = 'off'; });
+            this.bulk(offMap);
+            this.set('vinylmode', 'on');
+        },
+        raw: function(deck, code, status) { // bridge for legacy helpers
+            send(deck, code, normalize(status));
+        },
+        _dumpCache: function() { return JSON.parse(JSON.stringify(cache)); },
+        _LED_MAP: LED_MAP
+    };
+})();
+
+// NOTE: Future stages can migrate individual component output handlers
+// from MC2000.setLed(...) calls to MC2000.LedManager.reflect()/set().
+// Keeping legacy functions intact for incremental adoption.
+
 MC2000.setLed = function(deck,led,status) {
 	var ledStatus = 0x4B; // Default OFF
 	switch (status) {
@@ -313,6 +409,49 @@ MC2000.debugLog = function(msg) {
 
 
 //////////////////////////////
+// Helper: Set mixer controls to safe default values
+//////////////////////////////
+MC2000.setDefaultMixerLevels = function() {
+    if (MC2000.debugMode) MC2000.debugLog("Setting default mixer levels...");
+    
+    // For each deck
+    ["[Channel1]", "[Channel2]"].forEach(function(group) {
+        // Set volume to 50% (0.5) - safer default
+        engine.setValue(group, "volume", 0.5);
+        
+        // Set pregain/track gain to unity (1.0)
+        engine.setValue(group, "pregain", 1.0);
+        
+        // Set EQ to center/neutral (1.0 for Mixxx EQ)
+        var eqGroup = "[EqualizerRack1_" + group + "_Effect1]";
+        engine.setValue(eqGroup, "parameter1", 1.0); // Low
+        engine.setValue(eqGroup, "parameter2", 1.0); // Mid
+        engine.setValue(eqGroup, "parameter3", 1.0); // High
+        
+        // Set pitch/rate to center (0.0)
+        engine.setValue(group, "rate", 0.0);
+        
+        // Set pitch range to 8% (common default)
+        engine.setValue(group, "rateRange", 0.08);
+    });
+    
+    // Set master volume to 50% (0.5) - safer default
+    engine.setValue("[Master]", "volume", 0.5);
+    
+    // Set headphone mix to 50/50 (0.5)
+    engine.setValue("[Master]", "headMix", 0.5);
+    
+    // Set headphone volume to 25% (0.25) - safer default
+    engine.setValue("[Master]", "headVolume", 0.25);
+    
+    // Set FX units wet/dry to dry (0.0)
+    engine.setValue("[EffectRack1_EffectUnit1]", "mix", 0.0);
+    engine.setValue("[EffectRack1_EffectUnit2]", "mix", 0.0);
+    
+    if (MC2000.debugMode) MC2000.debugLog("Default mixer levels set");
+};
+
+//////////////////////////////
 // Initialization           //
 //////////////////////////////
 MC2000.init = function(id) {
@@ -345,15 +484,50 @@ MC2000.init = function(id) {
     // Build sampler decks
     MC2000.buildSamplerDecks();
 
-    //all leds should be on
-    var _t = Date.now() + 200;
-    while (Date.now() < _t)  /* brief pause */
+    // Set default mixer levels (safe startup values)
+    MC2000.setDefaultMixerLevels();
 
+    //all leds should be on
+    // Replace busy wait with 500 ms async delay that defers final LED reset + PFL + log
+    var _origAllLed2Default = MC2000.allLed2Default;
+    var _queuedSetValues = [];
+    var _origSetValue = engine.setValue;
+    var _queuedLogs = [];
+    var _origLog = MC2000.log;
+
+    // Queue engine.setValue calls made after this point (e.g. PFL enable) until timer completes
+    engine.setValue = function(group, key, value) {
+        _queuedSetValues.push({group: group, key: key, value: value});
+    };
+
+    // Queue log messages (e.g. final init success)
+    MC2000.log = function(msg) {
+        _queuedLogs.push(msg);
+    };
+
+    // Wrap allLed2Default so the actual reset happens after 500 ms, then flush queued ops
+    MC2000.allLed2Default = function() {
+        engine.beginTimer(500, function() {
+            _origAllLed2Default();
+            // Flush queued setValue calls
+            for (var i = 0; i < _queuedSetValues.length; i++) {
+                var q = _queuedSetValues[i];
+                _origSetValue(q.group, q.key, q.value);
+            }
+            // Flush queued logs
+            for (var j = 0; j < _queuedLogs.length; j++) {
+                _origLog(_queuedLogs[j]);
+            }
+            // Restore originals
+            engine.setValue = _origSetValue;
+            MC2000.log = _origLog;
+        }, true); // one-shot
+    };
     // Initialize all LEDs to default state
     MC2000.allLed2Default();
 
-    // Enable PFL/headphone cue on deck 2
-    //engine.setValue("[Channel2]", "pfl", 1);
+    // Enable PFL/headphone cue on deck 1
+    engine.setValue("[Channel1]", "pfl", 1);
     
     MC2000.log("Controller initialized successfully");
 };
@@ -450,7 +624,10 @@ MC2000.FxUnit = function(unitNumber) {
             self.effects[effectIndex].toggle.output = function(value) {
                 if (MC2000.leds[ledKey] !== undefined) {
                     // FX buttons on both units use deck 1 (status 0xB0)
-                    MC2000.setLed(1, MC2000.leds[ledKey], value ? 1 : 0);
+                    //MC2000.setLed(1, MC2000.leds[ledKey], value ? 1 : 0);
+                    this.sync.output = function(value) {
+                            MC2000.LedManager.reflect("sync", value);
+};                    //MC2000.setLed(1, MC2000.leds[ledKey], value ? 1 : 0);
                 }
                 if (MC2000.debugMode) {
                     MC2000.debugLog("FX" + self.unitNumber + " Effect" + effectIndex + " LED: " + value);
@@ -523,6 +700,39 @@ MC2000.buildLibraryControls = function() {
             engine.setValue("[Library]", "MoveDown", 1);
         }
     };
+    
+    // Library focus forward button component
+    MC2000.libraryFocusForwardComp = new components.Button({
+        group: "[Library]",
+        type: components.Button.prototype.types.push,
+    });
+    MC2000.libraryFocusForwardComp.input = function(channel, control, value, status, group) {
+        if (!MC2000.isButtonOn(value)) return;
+        engine.setValue("[Library]", "MoveFocusForward", 1);
+        if (MC2000.debugMode) MC2000.debugLog("Library: MoveFocusForward triggered");
+    };
+    
+    // Library focus backward button component
+    MC2000.libraryFocusBackwardComp = new components.Button({
+        group: "[Library]",
+        type: components.Button.prototype.types.push,
+    });
+    MC2000.libraryFocusBackwardComp.input = function(channel, control, value, status, group) {
+        if (!MC2000.isButtonOn(value)) return;
+        engine.setValue("[Library]", "MoveFocusBackward", 1);
+        if (MC2000.debugMode) MC2000.debugLog("Library: MoveFocusBackward triggered");
+    };
+    
+    // Library GoToItem button component
+    MC2000.libraryGoToItemComp = new components.Button({
+        group: "[Library]",
+        type: components.Button.prototype.types.push,
+    });
+    MC2000.libraryGoToItemComp.input = function(channel, control, value, status, group) {
+        if (!MC2000.isButtonOn(value)) return;
+        engine.setValue("[Library]", "GoToItem", 1);
+        if (MC2000.debugMode) MC2000.debugLog("Library: GoToItem triggered");
+    };
 };
 
 //////////////////////////////
@@ -567,7 +777,7 @@ MC2000.buildSamplerDecks = function() {
 };
 
 //////////////////////////////
-// Components wiring         //
+// Components wiring   Deck Controls      //
 //////////////////////////////
 MC2000.Deck = function(group) {
     this.group = group;
@@ -666,9 +876,32 @@ MC2000.Deck = function(group) {
     // Keylock: toggle keylock (master tempo)
     this.keylock = new components.Button({
         group: group,
-        inKey: "keylock",
-        type: components.Button.prototype.types.toggle,
+        type: components.Button.prototype.types.push,
     });
+    this.keylock.normalInput = function(channel, control, value, status, group) {
+        if (!MC2000.isButtonOn(value)) return;
+        // Normal: toggle keylock on/off
+        engine.setValue(group, "keylock", !engine.getValue(group, "keylock"));
+    };
+    this.keylock.shiftedInput = function(channel, control, value, status, group) {
+        if (!MC2000.isButtonOn(value)) return;
+        // Shift: cycle pitch range (6% -> 10% -> 24% -> 50% -> 6%)
+        var ranges = [0.06, 0.10, 0.24, 0.50];
+        var currentRange = engine.getValue(group, "rateRange");
+        var currentIndex = ranges.indexOf(currentRange);
+        var nextIndex = (currentIndex + 1) % ranges.length;
+        engine.setValue(group, "rateRange", ranges[nextIndex]);
+        if (MC2000.debugMode) {
+            MC2000.debugLog(group + " pitch range: " + (ranges[nextIndex] * 100) + "%");
+        }
+    };
+    this.keylock.unshift = function() {
+        this.input = this.normalInput;
+    };
+    this.keylock.shift = function() {
+        this.input = this.shiftedInput;
+    };
+    this.keylock.unshift();
     this.keylock.output = function(value) {
         MC2000.setLed(self.deckNumber, MC2000.leds.keylock, value ? 1 : 0);
     };
@@ -737,11 +970,25 @@ MC2000.Deck = function(group) {
         group: group,
         type: components.Button.prototype.types.push,
     });
-    this.loadTrackBtn.input = function(channel, control, value, status, group) {
+    this.loadTrackBtn.normalInput = function(channel, control, value, status, group) {
         if (!MC2000.isButtonOn(value)) return;
+        // Normal: Load selected track
         engine.setValue(group, "LoadSelectedTrack", 1);
         if (MC2000.debugMode) MC2000.debugLog("Load track to " + group);
     };
+    this.loadTrackBtn.shiftedInput = function(channel, control, value, status, group) {
+        if (!MC2000.isButtonOn(value)) return;
+        // Shift: Eject/unload track
+        engine.setValue(group, "eject", 1);
+        if (MC2000.debugMode) MC2000.debugLog("Eject track from " + group);
+    };
+    this.loadTrackBtn.unshift = function() {
+        this.input = this.normalInput;
+    };
+    this.loadTrackBtn.shift = function() {
+        this.input = this.shiftedInput;
+    };
+    this.loadTrackBtn.unshift();
 
     // Track Gain: pregain/track gain knob
     this.trackGain = new components.Pot({ group: group, inKey: "pregain" });
@@ -762,27 +1009,80 @@ MC2000.Deck = function(group) {
         group: group,
         type: components.Button.prototype.types.push,
     });
-    this.pitchBendUpBtn.input = function(_ch,_ctrl,value,_status,group){
+    this.pitchBendUpBtn.normalInput = function(_ch,_ctrl,value,_status,group){
+        // Normal: temporary pitch bend up
         engine.setValue(group, "rate_temp_up", MC2000.isButtonOn(value) ? 1 : 0);
     };
+    this.pitchBendUpBtn.shiftedInput = function(_ch,_ctrl,value,_status,group){
+        // Shift: fast forward
+        engine.setValue(group, "fwd", MC2000.isButtonOn(value) ? 1 : 0);
+    };
+    this.pitchBendUpBtn.unshift = function() {
+        this.input = this.normalInput;
+    };
+    this.pitchBendUpBtn.shift = function() {
+        this.input = this.shiftedInput;
+    };
+    this.pitchBendUpBtn.unshift();
 
     this.pitchBendDownBtn = new components.Button({
         group: group,
         type: components.Button.prototype.types.push,
     });
-    this.pitchBendDownBtn.input = function(_ch,_ctrl,value,_status,group){
+    this.pitchBendDownBtn.normalInput = function(_ch,_ctrl,value,_status,group){
+        // Normal: temporary pitch bend down
         engine.setValue(group, "rate_temp_down", MC2000.isButtonOn(value) ? 1 : 0);
     };
+    this.pitchBendDownBtn.shiftedInput = function(_ch,_ctrl,value,_status,group){
+        // Shift: fast rewind (back)
+        engine.setValue(group, "back", MC2000.isButtonOn(value) ? 1 : 0);
+    };
+    this.pitchBendDownBtn.unshift = function() {
+        this.input = this.normalInput;
+    };
+    this.pitchBendDownBtn.shift = function() {
+        this.input = this.shiftedInput;
+    };
+    this.pitchBendDownBtn.unshift();
 
     this.applyShiftState = function(shifted) {
-        // Apply shift to cue and sync buttons
-        if (this.cue) {
-            if (shifted && this.cue.shift) { this.cue.shift(); }
-            else if (this.cue.unshift) { this.cue.unshift(); }
-        }
-        if (this.sync) {
-            if (shifted && this.sync.shift) { this.sync.shift(); }
-            else if (this.sync.unshift) { this.sync.unshift(); }
+        // List of all shift-capable components
+        var shiftComponents = [
+            this.cue,
+            this.sync,
+            this.keylock,
+            this.loadTrackBtn,
+            this.pitchBendUpBtn,
+            this.pitchBendDownBtn,
+            this.loopInBtn,
+            this.loopOutBtn,
+            this.loopHalveBtn,
+            this.loopDoubleBtn,
+            this.reloopExitBtn
+        ];
+        
+        // Apply shift/unshift to individual components
+        shiftComponents.forEach(function(comp) {
+            if (comp) {
+                if (shifted && comp.shift) {
+                    comp.shift();
+                } else if (comp.unshift) {
+                    comp.unshift();
+                }
+            }
+        });
+        
+        // Apply shift/unshift to hotcue buttons
+        if (this.hotcueButtons) {
+            this.hotcueButtons.forEach(function(btn) {
+                if (btn) {
+                    if (shifted && btn.shift) {
+                        btn.shift();
+                    } else if (btn.unshift) {
+                        btn.unshift();
+                    }
+                }
+            });
         }
     };
 
@@ -793,29 +1093,35 @@ MC2000.Deck = function(group) {
         group: group,
         type: components.Button.prototype.types.push,
     });
-    this.loopInBtn.input = function(_ch,_ctrl,value,_status,group){
+    this.loopInBtn.normalInput = function(_ch,_ctrl,value,_status,group){
         if (!MC2000.isButtonOn(value)) return;
+        // Normal: Set loop in point, or activate beatloop if no loop
+        var loopEnabled = engine.getValue(group, "loop_enabled");
+        var loopStart = engine.getValue(group, "loop_start_position");
         
-        if (MC2000.isShiftActive()) {
-            // Shift: Jump to loop in point (if loop exists)
-            var loopStart = engine.getValue(group, "loop_start_position");
-            if (loopStart !== -1) {
-                engine.setValue(group, "loop_in_goto", 1);
-            }
+        if (loopStart === -1 && !loopEnabled) {
+            // No loop exists: create 4-beat loop
+            engine.setValue(group, "beatloop_4_activate", 1);
         } else {
-            // Normal: Set loop in point, or activate beatloop if no loop
-            var loopEnabled = engine.getValue(group, "loop_enabled");
-            var loopStart = engine.getValue(group, "loop_start_position");
-            
-            if (loopStart === -1 && !loopEnabled) {
-                // No loop exists: create 4-beat loop
-                engine.setValue(group, "beatloop_4_activate", 1);
-            } else {
-                // Set loop in point
-                engine.setValue(group, "loop_in", 1);
-            }
+            // Set loop in point
+            engine.setValue(group, "loop_in", 1);
         }
     };
+    this.loopInBtn.shiftedInput = function(_ch,_ctrl,value,_status,group){
+        if (!MC2000.isButtonOn(value)) return;
+        // Shift: Jump to loop in point (if loop exists)
+        var loopStart = engine.getValue(group, "loop_start_position");
+        if (loopStart !== -1) {
+            engine.setValue(group, "loop_in_goto", 1);
+        }
+    };
+    this.loopInBtn.unshift = function() {
+        this.input = this.normalInput;
+    };
+    this.loopInBtn.shift = function() {
+        this.input = this.shiftedInput;
+    };
+    this.loopInBtn.unshift();
     this.loopInBtn.output = function(value) {
         MC2000.setLed(self.deckNumber, MC2000.leds.loopin, value ? 1 : 0);
     };
@@ -829,20 +1135,26 @@ MC2000.Deck = function(group) {
         group: group,
         type: components.Button.prototype.types.push,
     });
-    this.loopOutBtn.input = function(_ch,_ctrl,value,_status,group){
+    this.loopOutBtn.normalInput = function(_ch,_ctrl,value,_status,group){
         if (!MC2000.isButtonOn(value)) return;
-        
-        if (MC2000.isShiftActive()) {
-            // Shift: Jump to loop out point (if loop exists)
-            var loopEnd = engine.getValue(group, "loop_end_position");
-            if (loopEnd !== -1) {
-                engine.setValue(group, "loop_out_goto", 1);
-            }
-        } else {
-            // Normal: Set loop out point
-            engine.setValue(group, "loop_out", 1);
+        // Normal: Set loop out point
+        engine.setValue(group, "loop_out", 1);
+    };
+    this.loopOutBtn.shiftedInput = function(_ch,_ctrl,value,_status,group){
+        if (!MC2000.isButtonOn(value)) return;
+        // Shift: Jump to loop out point (if loop exists)
+        var loopEnd = engine.getValue(group, "loop_end_position");
+        if (loopEnd !== -1) {
+            engine.setValue(group, "loop_out_goto", 1);
         }
     };
+    this.loopOutBtn.unshift = function() {
+        this.input = this.normalInput;
+    };
+    this.loopOutBtn.shift = function() {
+        this.input = this.shiftedInput;
+    };
+    this.loopOutBtn.unshift();
     this.loopOutBtn.output = function(value) {
         MC2000.setLed(self.deckNumber, MC2000.leds.loopout, value ? 1 : 0);
     };
@@ -856,17 +1168,21 @@ MC2000.Deck = function(group) {
         group: group,
         type: components.Button.prototype.types.push,
     });
-    this.loopHalveBtn.input = function(_ch,_ctrl,value,_status,group){
+    this.loopHalveBtn.normalInput = function(_ch,_ctrl,value,_status,group){
         if (!MC2000.isButtonOn(value)) return;
-        
-        if (MC2000.isShiftActive()) {
-            // Shift: Beatjump backward
-            engine.setValue(group, "beatjump_1_backward", 1);
-        } else {
-            // Normal: Halve loop
-            engine.setValue(group, "loop_halve", 1);
-        }
+        engine.setValue(group, "loop_halve", 1);
     };
+    this.loopHalveBtn.shiftedInput = function(_ch,_ctrl,value,_status,group){
+        if (!MC2000.isButtonOn(value)) return;
+        engine.setValue(group, "beatjump_1_backward", 1);
+    };
+    this.loopHalveBtn.unshift = function() {
+        this.input = this.normalInput;
+    };
+    this.loopHalveBtn.shift = function() {
+        this.input = this.shiftedInput;
+    };
+    this.loopHalveBtn.unshift();
 
     // Loop Double: Doubles the current loop size
     // Shift: Beatjump forward by 1 beat
@@ -874,17 +1190,21 @@ MC2000.Deck = function(group) {
         group: group,
         type: components.Button.prototype.types.push,
     });
-    this.loopDoubleBtn.input = function(_ch,_ctrl,value,_status,group){
+    this.loopDoubleBtn.normalInput = function(_ch,_ctrl,value,_status,group){
         if (!MC2000.isButtonOn(value)) return;
-        
-        if (MC2000.isShiftActive()) {
-            // Shift: Beatjump forward
-            engine.setValue(group, "beatjump_1_forward", 1);
-        } else {
-            // Normal: Double loop
-            engine.setValue(group, "loop_double", 1);
-        }
+        engine.setValue(group, "loop_double", 1);
     };
+    this.loopDoubleBtn.shiftedInput = function(_ch,_ctrl,value,_status,group){
+        if (!MC2000.isButtonOn(value)) return;
+        engine.setValue(group, "beatjump_1_forward", 1);
+    };
+    this.loopDoubleBtn.unshift = function() {
+        this.input = this.normalInput;
+    };
+    this.loopDoubleBtn.shift = function() {
+        this.input = this.shiftedInput;
+    };
+    this.loopDoubleBtn.unshift();
 
     // Reloop/Exit: Toggles loop on/off if loop exists, or creates beatloop if no loop
     // Shift: Creates 8-beat loop instead of 4-beat
@@ -892,25 +1212,37 @@ MC2000.Deck = function(group) {
         group: group,
         type: components.Button.prototype.types.push,
     });
-    this.reloopExitBtn.input = function(_ch,_ctrl,value,_status,group){
+    this.reloopExitBtn.normalInput = function(_ch,_ctrl,value,_status,group){
         if (!MC2000.isButtonOn(value)) return;
-        
         var loopStart = engine.getValue(group, "loop_start_position");
         
         if (loopStart !== -1) {
             // Loop exists: toggle it (reloop/exit)
             engine.setValue(group, "reloop_toggle", 1);
         } else {
-            // No loop: activate auto beatloop
-            if (MC2000.isShiftActive()) {
-                // Shift: 8-beat loop
-                engine.setValue(group, "beatloop_8_activate", 1);
-            } else {
-                // Normal: 4-beat loop
-                engine.setValue(group, "beatloop_4_activate", 1);
-            }
+            // No loop: create 4-beat loop
+            engine.setValue(group, "beatloop_4_activate", 1);
         }
     };
+    this.reloopExitBtn.shiftedInput = function(_ch,_ctrl,value,_status,group){
+        if (!MC2000.isButtonOn(value)) return;
+        var loopStart = engine.getValue(group, "loop_start_position");
+        
+        if (loopStart !== -1) {
+            // Loop exists: toggle it (reloop/exit)
+            engine.setValue(group, "reloop_toggle", 1);
+        } else {
+            // No loop: create 8-beat loop
+            engine.setValue(group, "beatloop_8_activate", 1);
+        }
+    };
+    this.reloopExitBtn.unshift = function() {
+        this.input = this.normalInput;
+    };
+    this.reloopExitBtn.shift = function() {
+        this.input = this.shiftedInput;
+    };
+    this.reloopExitBtn.unshift();
     this.reloopExitBtn.output = function(value) {
         MC2000.setLed(self.deckNumber, MC2000.leds.autoloop, value ? 1 : 0);
     };
@@ -938,6 +1270,30 @@ MC2000.Deck = function(group) {
             hotcue.connect = function() {
                 engine.makeConnection(this.group, "hotcue_" + this.number + "_enabled", this.output.bind(this));
             };
+            
+            // Store original input for shift layers
+            hotcue.normalInput = hotcue.input;
+            
+            // Shifted input: clear hotcue
+            hotcue.shiftedInput = function(channel, control, value, status, group) {
+                if (MC2000.isButtonOn(value)) {
+                    var pos = engine.getValue(group, "hotcue_" + this.number + "_position");
+                    if (pos !== -1) {
+                        engine.setValue(group, "hotcue_" + this.number + "_clear", 1);
+                    }
+                }
+                // No action on release in shift mode
+            };
+            
+            hotcue.unshift = function() {
+                this.input = this.normalInput;
+            };
+            
+            hotcue.shift = function() {
+                this.input = this.shiftedInput;
+            };
+            
+            hotcue.unshift(); // Initialize
         }).call(this, i, self.deckNumber, ledNames[i], this.hotcueButtons[i]);
     }
     
@@ -945,26 +1301,8 @@ MC2000.Deck = function(group) {
     this.hotcueInput = function(control, value, _status) {
         var n = MC2000.mapHotcue(control);
         if (n < 1 || n > 4 || !this.hotcueButtons[n - 1]) return;
-        
-        if (MC2000.isButtonOn(value)) {
-            // Button pressed
-            if (MC2000.isShiftActive()) {
-                // Shift: delete hotcue if it exists
-                var pos = engine.getValue(group, "hotcue_" + n + "_position");
-                if (pos !== -1) {
-                    engine.setValue(group, "hotcue_" + n + "_clear", 1);
-                }
-            } else {
-                // Normal: activate hotcue (set if not set, jump if set)
-                engine.setValue(group, "hotcue_" + n + "_activate", 1);
-            }
-        } else {
-            // Button released
-            if (!MC2000.isShiftActive()) {
-                // Release the activate
-                engine.setValue(group, "hotcue_" + n + "_activate", 0);
-            }
-        }
+        // Delegate to the hotcue button component (shift layers handled by component)
+        this.hotcueButtons[n - 1].input(0, control, value, 0, group);
     };
 };
 
@@ -1390,6 +1728,30 @@ MC2000.ScrollVertical = function(channel, control, value, status, group) {
     MC2000.scrollVerticalEncoder.input(channel, control, value, status, group);
 };
 
+MC2000.libraryFocusForwardBtn = function(channel, control, value, status, group) {
+    if (MC2000.debugMode) {
+        MC2000.debugLog("libraryFocusForwardBtn: ch=" + channel + " ctrl=" + control + 
+                       " val=" + value + " status=0x" + status.toString(16) + " group=" + group);
+    }
+    MC2000.libraryFocusForwardComp.input(channel, control, value, status, group);
+};
+
+MC2000.libraryFocusBackwardBtn = function(channel, control, value, status, group) {
+    if (MC2000.debugMode) {
+        MC2000.debugLog("libraryFocusBackwardBtn: ch=" + channel + " ctrl=" + control + 
+                       " val=" + value + " status=0x" + status.toString(16) + " group=" + group);
+    }
+    MC2000.libraryFocusBackwardComp.input(channel, control, value, status, group);
+};
+
+MC2000.libraryGoToItemBtn = function(channel, control, value, status, group) {
+    if (MC2000.debugMode) {
+        MC2000.debugLog("libraryGoToItemBtn: ch=" + channel + " ctrl=" + control +
+                        " val=" + value + " status=0x" + status.toString(16) + " group=" + group);
+    }
+    MC2000.libraryGoToItemComp.input(channel, control, value, status, group);
+};
+
 //////////////////////////////
 // Sampler handlers         //
 //////////////////////////////
@@ -1415,6 +1777,28 @@ MC2000.samplerPlayButtonGeneric = function(channel, control, value, status) {
         return;
     }
     var group = "[Sampler" + samplerNum + "]";
+    // Only act on button press (ignore release/off)
+    if (!MC2000.isButtonOn(value)) return;
+
+    // Shift: Eject/unload sampler if track is loaded
+    if (MC2000.isShiftActive()) {
+        var loaded = engine.getValue(group, "track_loaded");
+        if (loaded === 1) {
+            engine.setValue(group, "eject", 1);
+            if (MC2000.debugMode) MC2000.debugLog("Sampler" + samplerNum + ": ejected track");
+        }
+        return;
+    }
+
+    // Normal behavior: If sampler empty, load selected library track and play instead of toggling
+    var loaded = engine.getValue(group, "track_loaded");
+    if (loaded === 0) {
+        engine.setValue(group, "LoadSelectedTrackAndPlay", 1);
+        if (MC2000.debugMode) MC2000.debugLog("Sampler" + samplerNum + ": auto-loaded selected track and started playback");
+        return; // Do not toggle play state immediately after auto-load
+    }
+
+    // Otherwise toggle play as usual
     MC2000.samplers[samplerNum].playButton.input(channel, control, value, status, group);
 };
 

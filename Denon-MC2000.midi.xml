@@ -16,7 +16,7 @@
   </info>
   <controller id="DENON-MC2000" protocol="MIDI">
     <scriptfiles>
-      <!-- Components framework (ensure this file exists in the same folder) -->
+      <!-- Components framework (ensure this file exists in the same folder or Mixxx controllers folder) -->
       <file filename="lodash.mixxx.js" />
       <file filename="midi-components-0.0.js"/>
       <file filename="Denon-MC2000-scripts.js" functionprefix="MC2000"/>
@@ -174,7 +174,7 @@
         <options><Script-Binding/></options>
       </control>
       
-      <!-- Monitor Cue (PFL) buttons (toggle - only need Note On) -->
+      <!-- Monitor Cue (PFL) buttons (toggle) -->
       <control>
         <group>[Channel1]</group>
         <key>MC2000.pflButton</key>
@@ -183,9 +183,23 @@
         <options><Script-Binding/></options>
       </control>
       <control>
+        <group>[Channel1]</group>
+        <key>MC2000.pflButton</key>
+        <status>0x80</status>
+        <midino>0x01</midino>
+        <options><Script-Binding/></options>
+      </control>
+      <control>
         <group>[Channel2]</group>
         <key>MC2000.pflButton</key>
         <status>0x91</status>
+        <midino>0x05</midino>
+        <options><Script-Binding/></options>
+      </control>
+      <control>
+        <group>[Channel2]</group>
+        <key>MC2000.pflButton</key>
+        <status>0x81</status>
         <midino>0x05</midino>
         <options><Script-Binding/></options>
       </control>
@@ -234,7 +248,7 @@
         <group>[Channel2]</group>
         <key>MC2000.volumeFader</key>
         <status>0xB1</status>
-        <midino>0x05</midino>
+        <midino>0x10</midino>
         <options><Script-Binding/></options>
       </control>
       
@@ -885,18 +899,47 @@
       <!-- Library navigation -->
       <control>
         <group>[Library]</group>
-        <key>MoveFocusBackward</key>
-        <status>0xB0</status>
+        <key>MC2000.libraryFocusBackwardBtn</key>
+        <status>0x90</status>
         <midino>0x30</midino>
-        <options><Button/></options>
+        <options><Script-Binding/></options>
+      </control>
+      <control>
+        <group>[Library]</group>
+        <key>MC2000.libraryFocusBackwardBtn</key>
+        <status>0x80</status>
+        <midino>0x30</midino>
+        <options><Script-Binding/></options>
       </control>
 
       <control>
         <group>[Library]</group>
-        <key>MoveFocusForward</key>
-        <status>0xB0</status>
+        <key>MC2000.libraryFocusForwardBtn</key>
+        <status>0x90</status>
         <midino>0x29</midino>
-        <options><Button/></options>
+        <options><Script-Binding/></options>
+      </control>
+      <control>
+        <group>[Library]</group>
+        <key>MC2000.libraryFocusForwardBtn</key>
+        <status>0x80</status>
+        <midino>0x29</midino>
+        <options><Script-Binding/></options>
+      </control>
+
+      <control>
+        <group>[Library]</group>
+        <key>MC2000.libraryGoToItemBtn</key>
+        <status>0x90</status>
+        <midino>0x28</midino>
+        <options><Script-Binding/></options>
+      </control>
+      <control>
+        <group>[Library]</group>
+        <key>MC2000.libraryGoToItemBtn</key>
+        <status>0x80</status>
+        <midino>0x28</midino>
+        <options><Script-Binding/></options>
       </control>
 
       <!-- Library vertical scroll encoder (requires script for relative encoding) -->
