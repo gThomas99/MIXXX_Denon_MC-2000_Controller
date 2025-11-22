@@ -1,3 +1,4 @@
+
 /**
  * Denon MC2000 Mixxx Controller Mapping
  * Author: Graham Thomas
@@ -44,46 +45,6 @@
 
 var MC2000 = {};
 
-// If the Components library is not loaded, provide a tiny shim so the script doesn't crash.
-// For full functionality, ensure midi-components-0.0.js (or 1.0) is loaded from XML.
-if (typeof components === "undefined") {
-    var components = {
-        Component: function(opts) { Object.assign(this, opts || {}); },
-        ComponentContainer: function() {
-            this.forEachComponent = function(cb) {
-                Object.keys(this).forEach(function(k){
-                    if (this[k] && typeof this[k] === "object" && this[k].input) cb(this[k], k);
-                }, this);
-            };
-        },
-        Button: function(opts) {
-            this.type = (components.Button && components.Button.prototype && components.Button.prototype.types && components.Button.prototype.types.toggle) || 1;
-            Object.assign(this, opts || {});
-            this.isPress = function(_ch,_ctrl,value,_status){ return value !== 0; };
-            this.input = function(_ch,_ctrl,value,_status,group){
-                if (!this.inKey || !group) return;
-                if (this.isPress(0,0,value,0)) {
-                    if (this.onShortPress) { this.onShortPress(); return; }
-                    script.toggleControl(group, this.inKey);
-                }
-            };
-            this.output = function(){ if (this.outKey && this.group) engine.trigger(this.group, this.outKey); };
-            this.connect = function(){};
-            this.trigger = function(){ this.output(); };
-            this.disconnect = function(){};
-        },
-        Pot: function(opts){
-            Object.assign(this, opts || {});
-            this.input = function(_ch,_ctrl,value,_status,group){
-                if (!this.inKey || !group) return;
-                var v = value / 127.0; // naive scaling
-                engine.setParameter(group, this.inKey, v);
-            };
-            this.connect = function(){};
-        }
-    };
-    components.Button.prototype = { types: { toggle: 1, push: 2 } };
-}
 // MIDI Reception commands (from spec)
 MC2000.leds = {
 	shiftlock: 		2,
@@ -111,20 +72,33 @@ MC2000.leds = {
 	cue: 			38,
 	play: 			39, // was wrong in the spec sheet as decimal value
 
-	loopin: 		36, 
-	loopout: 		64, 
-	autoloop: 		43,
-	fx1_1: 			92, 
-	
-	fx1_2: 			93, 
-	fx1_3: 			94,
-	fx2_1: 			96, 
-	fx2_2: 			97,
+	loopin: 		0x24, 
+	loopout: 		0x40, 
+	autoloop: 		0x2b,
 
-	fx2_3: 			98,
-	// "ALL SLIDER/VOLUME/FADER REQUEST": 57,
+	fx1_1: 			0x5c, 
+	fx1_2: 			0x5d, 
+	fx1_3: 			0x5e,
+	
+    fx2_1: 			0x60, 
+	fx2_2: 			0x61,
+	fx2_3: 			0x62,
+    // "ALL SLIDER/VOLUME/FADER REQUEST": 57,
 	monitorcue_l: 	69,
-	monitorcue_r: 	81
+	monitorcue_r: 	81,
+	
+	// Sampler LEDs (Bank 1 - left deck)
+	sampler1: 		0x19,
+	sampler2: 		0x1b,
+	sampler3: 		0x1d,
+	sampler4: 		0x20,
+	// Sampler LEDs (Bank 2 - right deck)
+	sampler5: 		0x41,
+	sampler6: 		0x43,
+	sampler7: 		0x45,
+	sampler8: 		0x47,
+	// Sample mode indicator
+	samplemode: 	0x1A
 };
 
 MC2000.setLed = function(deck,led,status) {
@@ -145,41 +119,173 @@ MC2000.setLed2 = function(deck,led,status) {
 };
 
 MC2000.allLed2Default = function () {
-	// All leds OFF for deck 1 and 2
-	for (var led in MC2000.leds) {
-		MC2000.setLed(1,MC2000.leds[led],0);
-		MC2000.setLed(2,MC2000.leds[led],0);	
-	}
+    // Delegate bulk OFF to new helper (includes monitor cue LEDs)
+    // Ignore returned promise; safe during init
+    MC2000.setAllLeds(false);
+    // Re-enable vinylmode LEDs to match original default
+    MC2000.setLed(1, MC2000.leds.vinylmode, 1);
+    MC2000.setLed(2, MC2000.leds.vinylmode, 1);
+    if (MC2000.debugMode) MC2000.debugLog("allLed2Default: reset via setAllLeds(false) then vinylmode ON");
+};
 
-	// Monitor cue leds OFF for deck 1 and 2 (use function setLed2)
-	MC2000.setLed2(1,MC2000.leds["monitorcue_l"],0);
-	MC2000.setLed2(2,MC2000.leds["monitorcue_r"],0);
+/**
+ * Asynchronously set all controller LEDs ON or OFF.
+ * @param {boolean} on - true to turn all LEDs on, false to turn them off.
+ * @param {object} [opts] - Optional flags.
+ * @param {boolean} [opts.blink=false] - If true and on==true, use blink state (status=2) where supported.
+ * @returns {Promise<number>} Resolves to the status code applied (0=OFF,1=ON,2=BLINK).
+ *
+ * Notes:
+ * - Uses MC2000.setLed for regular LEDs and MC2000.setLed2 for monitor cue LEDs.
+ * - Applies to both decks (1 and 2) for all standard LEDs.
+ * - Blink state may not be supported by every LED; hardware testing required.
+ * - Safe to call while playing; no interaction with Mixxx engine state.
+ *
+ * Example:
+ *   await MC2000.setAllLeds(true);       // turn everything ON
+ *   await MC2000.setAllLeds(false);      // turn everything OFF
+ *   await MC2000.setAllLeds(true,{blink:true}); // attempt blink
+ */
+MC2000.setAllLeds = function(on, opts) {
+    var blink = opts && opts.blink;
+    var status = on ? (blink ? 2 : 1) : 0;
+    try {
+        for (var name in MC2000.leds) {
+            var code = MC2000.leds[name];
+            if (name === "monitorcue_l") {
+                MC2000.setLed2(1, code, on ? 1 : 0);
+                continue;
+            }
+            if (name === "monitorcue_r") {
+                MC2000.setLed2(2, code, on ? 1 : 0);
+                continue;
+            }
+            // Regular LED: set for both decks
+            MC2000.setLed(1, code, status);
+            MC2000.setLed(2, code, status);
+        }
+        if (MC2000.debugMode) MC2000.debugLog("setAllLeds: on=" + on + " status=" + status + (blink?" (blink)":""));
+    } catch (e) {
+        if (MC2000.debugMode) MC2000.debugLog("setAllLeds error: " + e);
+    }
+    // Return applied status for potential chaining logic
+    return status;
+};
 
-	// Vinylmode ON
-	MC2000.setLed(1,MC2000.leds["vinylmode"],1);
-	MC2000.setLed(2,MC2000.leds["vinylmode"],1);
+/**
+ * Blink both vinyl mode LEDs for a specified duration to indicate an error.
+ * Intended for signaling missing dependencies (e.g. components.js not loaded).
+ * Manually toggles LEDs every 500ms instead of using hardware blink state.
+ * @param {number} [durationMs=5000] Duration to blink in milliseconds.
+ */
+MC2000.blinkVinylModeError = function(durationMs) {
+    durationMs = (typeof durationMs === 'number' && durationMs > 0) ? durationMs : 5000;
+    if (typeof engine === 'undefined' || !engine.beginTimer) {
+        if (MC2000.debugMode) MC2000.debugLog("blinkVinylModeError: timer API missing, cannot blink");
+        return;
+    }
+    
+    if (MC2000.debugMode) MC2000.debugLog("blinkVinylModeError: begin manual blink for " + durationMs + "ms");
+    
+    var blinkInterval = 250; // Toggle every 250ms
+    var elapsed = 0;
+    var ledState = false; // Start with OFF
+    
+    // Initial state: turn LEDs off
+    MC2000.setLed(1, MC2000.leds.vinylmode, 0);
+    MC2000.setLed(2, MC2000.leds.vinylmode, 0);
+    
+    // Create repeating timer to toggle LEDs
+    var timerId = engine.beginTimer(blinkInterval, function() {
+        elapsed += blinkInterval;
+        
+        if (elapsed >= durationMs) {
+            // Stop blinking and restore solid ON state
+            engine.stopTimer(timerId);
+            MC2000.setLed(1, MC2000.leds.vinylmode, 1);
+            MC2000.setLed(2, MC2000.leds.vinylmode, 1);
+            if (MC2000.debugMode) MC2000.debugLog("blinkVinylModeError: ended blink, vinylmode solid ON");
+        } else {
+            // Toggle LED state
+            ledState = !ledState;
+            MC2000.setLed(1, MC2000.leds.vinylmode, ledState ? 1 : 0);
+            MC2000.setLed(2, MC2000.leds.vinylmode, ledState ? 1 : 0);
+        }
+    }, false); // false = repeating timer
+};
+
+/**
+ * Manually blink the shift lock LED every 500ms for the specified duration.
+ * Used for transient feedback (e.g. indicating a mode toggle).
+ * @param {number} [durationMs=2000] How long to blink in milliseconds.
+ */
+MC2000.blinkShiftLock = function(durationMs) {
+    durationMs = (typeof durationMs === 'number' && durationMs > 0) ? durationMs : 2000;
+    if (typeof engine === 'undefined' || !engine.beginTimer) {
+        if (MC2000.debugMode) MC2000.debugLog("blinkShiftLock: timer API missing, cannot blink");
+        return;
+    }
+    var blinkInterval = 500;
+    var elapsed = 0;
+    var ledState = false;
+    // Ensure LED starts OFF
+    MC2000.setLed(1, MC2000.leds.shiftlock, 0);
+    MC2000.setLed(2, MC2000.leds.shiftlock, 0);
+    var timerId = engine.beginTimer(blinkInterval, function(){
+        elapsed += blinkInterval;
+        if (elapsed >= durationMs) {
+            engine.stopTimer(timerId);
+            // Leave LED OFF at end
+            MC2000.setLed(1, MC2000.leds.shiftlock, 0);
+            MC2000.setLed(2, MC2000.leds.shiftlock, 0);
+            if (MC2000.debugMode) MC2000.debugLog("blinkShiftLock: ended blink");
+        } else {
+            ledState = !ledState;
+            MC2000.setLed(1, MC2000.leds.shiftlock, ledState ? 1 : 0);
+            MC2000.setLed(2, MC2000.leds.shiftlock, ledState ? 1 : 0);
+        }
+    }, false);
 };
 
 //////////////////////////////
 // Tunable constants        //
 //////////////////////////////
-MC2000.jogScratchAlpha = 1.0/8;      // same pattern as other Denon decks
-MC2000.jogScratchBeta  = (1.0/8)/32; // friction
-MC2000.jogResolution   = 2048;       // samples per rev (guess; adjust experimentally)
-MC2000.jogRpm          = 45; //33 + 1/3;   // virtual platter speed
+// JogWheel Scratch Parameters (adapted from JogWheelScratch.js)
+// TICKS_PER_REV: Higher = less sensitive scratching
+MC2000.jogResolution   = 96;         // ticks per revolution
+// Heavier vinyl with more damping to reduce drift
+MC2000.jogRpm          = 33 + 1/3;   // vinyl RPM
+MC2000.jogScratchAlpha = 1.0/16;     // bigger inertia (less easy to keep spinning)
+MC2000.jogScratchBeta  = (1.0/16)/64; // more damping (stops creeping)
+// Velocity scaling: MAX_SCALING=1 for no boost, >1 for speed ramp
+MC2000.jogMaxScaling   = 1.25;       // slight boost at quick spins
+// Fine scrubbing when paused: smaller = finer control
+MC2000.jogScrubScaling = 0.0001;     // extremely fine scrubbing
+// Pitch bend scaling for CDJ mode (outer wheel when not scratching)
+MC2000.jogPitchScale   = 1.0/4;      // scale for non-scratch jog (pitch bend)
+// MIDI center value for relative encoder
 MC2000.jogCenter       = 0x40;       // relative center value
-MC2000.jogScale        = 1.0/4;      // scale for non-scratch jog (pitch bend)
 MC2000.numHotcues      = 8;
 
 //////////////////////////////
 // Internal state           //
 //////////////////////////////
-MC2000.shift = false;
+// Shift state: true if shift is currently held (button down)
+MC2000.shiftHeld = false;
+// Shift lock: true if shift lock is enabled (sticky shift)
+MC2000.shiftLock = false;
 MC2000.scratchEnabled = {"[Channel1]": false, "[Channel2]": false};
+MC2000.sampleMode = {"[Channel1]": false, "[Channel2]": false};
+MC2000.vinylMode = {"[Channel1]": true, "[Channel2]": true}; // Track vinyl/CDJ mode state
 MC2000.deck = {
     "[Channel1]": {scratchMode: false},
     "[Channel2]": {scratchMode: false}
 };
+// JogWheel state tracking (index 0 unused, 1=deck1, 2=deck2)
+MC2000.jogScratchActive = [false, false, false];
+MC2000.jogReleaseTimer  = [null, null, null];
+MC2000.jogLastTickTime  = [0, 0, 0];
+MC2000.jogTickCount     = [0, 0, 0];
 
 //////////////////////////////
 // Utility helpers          //
@@ -204,17 +310,7 @@ MC2000.debugLog = function(msg) {
     }
 };
 
-MC2000.toggleShift = function(_channel, _control, value) {
-    MC2000.shift = MC2000.isButtonOn(value);
-    // Update component layers if created
-    if (MC2000.decks) {
-        Object.keys(MC2000.decks).forEach(function(g){
-            var d = MC2000.decks[g];
-            if (!d) return;
-            if (d.applyShiftState) d.applyShiftState(MC2000.shift);
-        });
-    }
-};
+
 
 //////////////////////////////
 // Initialization           //
@@ -223,8 +319,16 @@ MC2000.init = function(id) {
     MC2000.id = id;
     MC2000.log("Init controller " + id);
     
-    // Initialize all LEDs to default state
-    MC2000.allLed2Default();
+    // Check if components library is loaded - abort if missing
+    if (typeof components === "undefined") {
+        MC2000.log("FATAL ERROR: Components library not loaded!");
+        MC2000.blinkVinylModeError(10000); // Blink for 10 seconds to indicate error
+        return; // Exit init - controller will not function
+    }
+    
+    // Brief LED flash to confirm init started
+    MC2000.setAllLeds(true);
+     
     
     // Build Components-based structure with LED connections
     MC2000.buildComponents();
@@ -237,6 +341,21 @@ MC2000.init = function(id) {
     
     // Build library controls
     MC2000.buildLibraryControls();
+    
+    // Build sampler decks
+    MC2000.buildSamplerDecks();
+
+    //all leds should be on
+    var _t = Date.now() + 200;
+    while (Date.now() < _t)  /* brief pause */
+
+    // Initialize all LEDs to default state
+    MC2000.allLed2Default();
+
+    // Enable PFL/headphone cue on deck 2
+    //engine.setValue("[Channel2]", "pfl", 1);
+    
+    MC2000.log("Controller initialized successfully");
 };
 
 MC2000.shutdown = function() {
@@ -244,7 +363,33 @@ MC2000.shutdown = function() {
     // Turn off all LEDs
     MC2000.allLed2Default();
 };
+//////////////////////////////
+// Shift button handler: push-to-hold logic
 
+MC2000.toggleShift = function(_channel, _control, value) {
+    MC2000.shiftHeld = MC2000.isButtonOn(value);
+    MC2000.updateShiftState();
+};
+
+// Update effective shift state and apply to all decks, and update shift lock LED
+MC2000.updateShiftState = function() {
+    var effectiveShift = MC2000.shiftHeld || MC2000.shiftLock;
+    if (MC2000.decks) {
+        Object.keys(MC2000.decks).forEach(function(g){
+            var d = MC2000.decks[g];
+            if (!d) return;
+            if (d.applyShiftState) d.applyShiftState(effectiveShift);
+        });
+    }
+    // Update shift lock LED: ON if locked, OFF if not
+    MC2000.setLed(1, MC2000.leds.shiftlock, MC2000.shiftLock ? 1 : 0);
+    MC2000.setLed(2, MC2000.leds.shiftlock, MC2000.shiftLock ? 1 : 0);
+};
+
+// Helper: get current effective shift state (held or locked)
+MC2000.isShiftActive = function() {
+    return MC2000.shiftHeld || MC2000.shiftLock;
+};
 //////////////////////////////
 // Master Controls          //
 //////////////////////////////
@@ -280,42 +425,43 @@ MC2000.buildMasterControls = function() {
 MC2000.FxUnit = function(unitNumber) {
     this.group = "[EffectRack1_EffectUnit" + unitNumber + "]";
     this.unitNumber = unitNumber;
+    this.effects = [];
+    var self = this;
     
-    // Effect 1
-    this.effect1Toggle = new components.Button({
-        group: "[EffectRack1_EffectUnit" + unitNumber + "_Effect1]",
-        inKey: "enabled",
-        type: components.Button.prototype.types.toggle,
-    });
-    
-    this.effect1Meta = new components.Pot({
-        group: "[EffectRack1_EffectUnit" + unitNumber + "_Effect1]",
-        inKey: "meta"
-    });
-    
-    // Effect 2
-    this.effect2Toggle = new components.Button({
-        group: "[EffectRack1_EffectUnit" + unitNumber + "_Effect2]",
-        inKey: "enabled",
-        type: components.Button.prototype.types.toggle,
-    });
-    
-    this.effect2Meta = new components.Pot({
-        group: "[EffectRack1_EffectUnit" + unitNumber + "_Effect2]",
-        inKey: "meta"
-    });
-    
-    // Effect 3
-    this.effect3Toggle = new components.Button({
-        group: "[EffectRack1_EffectUnit" + unitNumber + "_Effect3]",
-        inKey: "enabled",
-        type: components.Button.prototype.types.toggle,
-    });
-    
-    this.effect3Meta = new components.Pot({
-        group: "[EffectRack1_EffectUnit" + unitNumber + "_Effect3]",
-        inKey: "meta"
-    });
+    // Build 3 effects per unit using array
+    for (var i = 1; i <= 3; i++) {
+        var effectGroup = "[EffectRack1_EffectUnit" + unitNumber + "_Effect" + i + "]";
+        var ledName = "fx" + unitNumber + "_" + i;
+        
+        this.effects[i] = {
+            toggle: new components.Button({
+                group: effectGroup,
+                inKey: "enabled",
+                type: components.Button.prototype.types.toggle,
+            }),
+            meta: new components.Pot({
+                group: effectGroup,
+                inKey: "meta"
+            })
+        };
+        
+        // Add LED output handler and connection for each toggle button
+        (function(effectIndex, ledKey) {
+            self.effects[effectIndex].toggle.output = function(value) {
+                if (MC2000.leds[ledKey] !== undefined) {
+                    // FX buttons on both units use deck 1 (status 0xB0)
+                    MC2000.setLed(1, MC2000.leds[ledKey], value ? 1 : 0);
+                }
+                if (MC2000.debugMode) {
+                    MC2000.debugLog("FX" + self.unitNumber + " Effect" + effectIndex + " LED: " + value);
+                }
+            };
+            
+            self.effects[effectIndex].toggle.connect = function() {
+                engine.makeConnection(this.group, "enabled", this.output.bind(this));
+            };
+        })(i, ledName);
+    }
     
     // Wet/Dry encoder (relative encoder for mix control)
     this.wetDryEncoder = new components.Encoder({
@@ -340,6 +486,18 @@ MC2000.buildFxUnits = function() {
         1: new MC2000.FxUnit(1),
         2: new MC2000.FxUnit(2)
     };
+    
+    // Connect all FX toggle button LEDs
+    for (var unitNum = 1; unitNum <= 2; unitNum++) {
+        for (var effectNum = 1; effectNum <= 3; effectNum++) {
+            var toggle = MC2000.fxUnits[unitNum].effects[effectNum].toggle;
+            if (toggle && toggle.connect) {
+                toggle.connect();
+            }
+        }
+    }
+    
+    if (MC2000.debugMode) MC2000.debugLog("FX units built with LED connections");
 };
 
 //////////////////////////////
@@ -368,6 +526,47 @@ MC2000.buildLibraryControls = function() {
 };
 
 //////////////////////////////
+// Sampler Decks            //
+//////////////////////////////
+MC2000.SamplerDeck = function(samplerNumber) {
+    this.group = "[Sampler" + samplerNumber + "]";
+    this.samplerNumber = samplerNumber;
+    this.deckNumber = samplerNumber <= 4 ? 1 : 2; // Deck 1 for samplers 1-4, Deck 2 for 5-8
+    var self = this;
+    
+    // Play/Stop toggle button (only control needed)
+    this.playButton = new components.Button({
+        group: this.group,
+        inKey: "play",
+        type: components.Button.prototype.types.toggle,
+    });
+    this.playButton.output = function(value) {
+        var ledName = "sampler" + self.samplerNumber;
+        if (MC2000.leds[ledName] !== undefined) {
+            MC2000.setLed(self.deckNumber, MC2000.leds[ledName], value ? 1 : 0);
+        }
+        if (MC2000.debugMode) MC2000.debugLog("Sampler" + self.samplerNumber + " play LED: " + value);
+    };
+    this.playButton.connect = function() {
+        engine.makeConnection(this.group, "play", this.output.bind(this));
+    };
+};
+
+MC2000.buildSamplerDecks = function() {
+    MC2000.samplers = {};
+    
+    // Build 8 samplers (2 banks of 4)
+    for (var i = 1; i <= 8; i++) {
+        MC2000.samplers[i] = new MC2000.SamplerDeck(i);
+        if (MC2000.samplers[i].playButton && MC2000.samplers[i].playButton.connect) {
+            MC2000.samplers[i].playButton.connect();
+        }
+    }
+    
+    if (MC2000.debugMode) MC2000.debugLog("Sampler decks built (8 samplers)");
+};
+
+//////////////////////////////
 // Components wiring         //
 //////////////////////////////
 MC2000.Deck = function(group) {
@@ -377,11 +576,11 @@ MC2000.Deck = function(group) {
     // Get deck number (1 or 2)
     this.deckNumber = (group === "[Channel1]") ? 1 : 2;
 
-    // Play: play type button; LED follows play_indicator
+    // Play: toggle play/pause on button press only
     this.play = new components.Button({
         group: group,
         inKey: "play",
-        type: components.Button.prototype.types.play,
+        type: components.Button.prototype.types.toggle,
     });
     this.play.output = function(value) {
         MC2000.setLed(self.deckNumber, MC2000.leds.play, value ? 1 : 0);
@@ -419,24 +618,49 @@ MC2000.Deck = function(group) {
         };
     };
 
-    // Sync: unshift one-shot, shift toggles sync lock
+    // Sync: unshift one-shot beatsync (or sync lock if held), shift toggles sync lock
     this.sync = new components.Button({
         group: group,
-        type: components.Button.prototype.types.sync,
     });
+    this.sync.longPressTimer = 0;
+    this.sync.longPressThreshold = 1000; // 1 second in milliseconds
+    this.sync.input = function(channel, control, value, status, group) {
+        if (MC2000.isButtonOn(value)) {
+            // Button pressed
+            if (MC2000.isShiftActive()) {
+                // Shift: toggle sync lock immediately
+                script.toggleControl(group, "sync_enabled");
+            } else {
+                // Check if sync lock is already enabled
+                var syncEnabled = engine.getValue(group, "sync_enabled");
+                if (syncEnabled) {
+                    // Sync lock is on: turn it off immediately
+                    engine.setValue(group, "sync_enabled", 0);
+                } else {
+                    // Sync lock is off: start timer for long press detection
+                    var self = this;
+                    this.longPressTimer = engine.beginTimer(this.longPressThreshold, function() {
+                        // Long press: enable sync lock
+                        engine.setValue(group, "sync_enabled", 1);
+                        self.longPressTimer = 0;
+                    }, true); // one-shot timer
+                }
+            }
+        } else {
+            // Button released
+            if (this.longPressTimer !== 0) {
+                // Short press: one-shot beatsync
+                engine.stopTimer(this.longPressTimer);
+                this.longPressTimer = 0;
+                engine.setValue(group, "beatsync", 1);
+            }
+        }
+    };
     this.sync.output = function(value) {
         MC2000.setLed(self.deckNumber, MC2000.leds.sync, value ? 1 : 0);
     };
     this.sync.connect = function() {
         engine.makeConnection(this.group, "sync_enabled", this.output.bind(this));
-    };
-    this.sync.unshift = function() {
-        this.inKey = null;
-        this.onShortPress = function(){ engine.setValue(group, "beatsync", 1); };
-    };
-    this.sync.shift = function() {
-        this.inKey = "sync_enabled";
-        this.onShortPress = function(){ script.toggleControl(group, "sync_enabled"); };
     };
 
     // Keylock: toggle keylock (master tempo)
@@ -465,6 +689,58 @@ MC2000.Deck = function(group) {
     };
     this.pfl.connect = function() {
         engine.makeConnection(this.group, "pfl", this.output.bind(this));
+    };
+
+    // Vinyl/CDJ mode button
+    this.vinylMode = new components.Button({
+        group: group,
+    });
+    this.vinylMode.input = function(channel, control, value, status, group) {
+        // Only act on button press, not release
+        if (!MC2000.isButtonOn(value)) return;
+        
+        // Toggle vinyl mode state
+        MC2000.vinylMode[group] = !MC2000.vinylMode[group];
+        MC2000.debugLog("Vinyl/CDJ mode toggled for " + group + ": " + 
+                       (MC2000.vinylMode[group] ? "VINYL" : "CDJ"));
+    };
+    // No LED output or connection needed as hardware handles this
+
+    // Sample Mode Toggle button
+    this.sampleModeToggle = new components.Button({
+        group: group,
+        type: components.Button.prototype.types.push,
+    });
+    this.sampleModeToggle.input = function(channel, control, value, status, group) {
+        if (!MC2000.isButtonOn(value)) return;
+        
+        // Toggle sample mode state for this deck
+        MC2000.sampleMode[group] = !MC2000.sampleMode[group];
+        
+        // Update LED
+        MC2000.setLed(self.deckNumber, MC2000.leds.samplemode, MC2000.sampleMode[group] ? 1 : 0);
+        
+        if (MC2000.debugMode) {
+            MC2000.debugLog(group + " sample mode: " + (MC2000.sampleMode[group] ? "ON" : "OFF"));
+        }
+    };
+    this.sampleModeToggle.output = function(value) {
+        MC2000.setLed(self.deckNumber, MC2000.leds.samplemode, value ? 1 : 0);
+    };
+    this.sampleModeToggle.connect = function() {
+        // Initialize LED state
+        this.output(MC2000.sampleMode[group]);
+    };
+
+    // Load Track button
+    this.loadTrackBtn = new components.Button({
+        group: group,
+        type: components.Button.prototype.types.push,
+    });
+    this.loadTrackBtn.input = function(channel, control, value, status, group) {
+        if (!MC2000.isButtonOn(value)) return;
+        engine.setValue(group, "LoadSelectedTrack", 1);
+        if (MC2000.debugMode) MC2000.debugLog("Load track to " + group);
     };
 
     // Track Gain: pregain/track gain knob
@@ -511,16 +787,33 @@ MC2000.Deck = function(group) {
     };
 
     // --- Loops ---
+    // Loop In: Sets loop in point, or activates 4-beat loop if no loop exists
+    // Shift: Jump to loop in point
     this.loopInBtn = new components.Button({
         group: group,
         type: components.Button.prototype.types.push,
     });
     this.loopInBtn.input = function(_ch,_ctrl,value,_status,group){
         if (!MC2000.isButtonOn(value)) return;
-        if (MC2000.shift) {
-            engine.setValue(group, "reloop_toggle", 1);
+        
+        if (MC2000.isShiftActive()) {
+            // Shift: Jump to loop in point (if loop exists)
+            var loopStart = engine.getValue(group, "loop_start_position");
+            if (loopStart !== -1) {
+                engine.setValue(group, "loop_in_goto", 1);
+            }
         } else {
-            engine.setValue(group, "loop_in", 1);
+            // Normal: Set loop in point, or activate beatloop if no loop
+            var loopEnabled = engine.getValue(group, "loop_enabled");
+            var loopStart = engine.getValue(group, "loop_start_position");
+            
+            if (loopStart === -1 && !loopEnabled) {
+                // No loop exists: create 4-beat loop
+                engine.setValue(group, "beatloop_4_activate", 1);
+            } else {
+                // Set loop in point
+                engine.setValue(group, "loop_in", 1);
+            }
         }
     };
     this.loopInBtn.output = function(value) {
@@ -530,15 +823,23 @@ MC2000.Deck = function(group) {
         engine.makeConnection(this.group, "loop_enabled", this.output.bind(this));
     };
 
+    // Loop Out: Sets loop out point and activates loop
+    // Shift: Jump to loop out point
     this.loopOutBtn = new components.Button({
         group: group,
         type: components.Button.prototype.types.push,
     });
     this.loopOutBtn.input = function(_ch,_ctrl,value,_status,group){
         if (!MC2000.isButtonOn(value)) return;
-        if (MC2000.shift) {
-            engine.setValue(group, "loop_exit", 1);
+        
+        if (MC2000.isShiftActive()) {
+            // Shift: Jump to loop out point (if loop exists)
+            var loopEnd = engine.getValue(group, "loop_end_position");
+            if (loopEnd !== -1) {
+                engine.setValue(group, "loop_out_goto", 1);
+            }
         } else {
+            // Normal: Set loop out point
             engine.setValue(group, "loop_out", 1);
         }
     };
@@ -549,22 +850,72 @@ MC2000.Deck = function(group) {
         engine.makeConnection(this.group, "loop_enabled", this.output.bind(this));
     };
 
+    // Loop Halve: Halves the current loop size
+    // Shift: Beatjump backward by 1 beat
     this.loopHalveBtn = new components.Button({
         group: group,
         type: components.Button.prototype.types.push,
     });
     this.loopHalveBtn.input = function(_ch,_ctrl,value,_status,group){
         if (!MC2000.isButtonOn(value)) return;
-        engine.setValue(group, "loop_halve", 1);
+        
+        if (MC2000.isShiftActive()) {
+            // Shift: Beatjump backward
+            engine.setValue(group, "beatjump_1_backward", 1);
+        } else {
+            // Normal: Halve loop
+            engine.setValue(group, "loop_halve", 1);
+        }
     };
 
+    // Loop Double: Doubles the current loop size
+    // Shift: Beatjump forward by 1 beat
     this.loopDoubleBtn = new components.Button({
         group: group,
         type: components.Button.prototype.types.push,
     });
     this.loopDoubleBtn.input = function(_ch,_ctrl,value,_status,group){
         if (!MC2000.isButtonOn(value)) return;
-        engine.setValue(group, "loop_double", 1);
+        
+        if (MC2000.isShiftActive()) {
+            // Shift: Beatjump forward
+            engine.setValue(group, "beatjump_1_forward", 1);
+        } else {
+            // Normal: Double loop
+            engine.setValue(group, "loop_double", 1);
+        }
+    };
+
+    // Reloop/Exit: Toggles loop on/off if loop exists, or creates beatloop if no loop
+    // Shift: Creates 8-beat loop instead of 4-beat
+    this.reloopExitBtn = new components.Button({
+        group: group,
+        type: components.Button.prototype.types.push,
+    });
+    this.reloopExitBtn.input = function(_ch,_ctrl,value,_status,group){
+        if (!MC2000.isButtonOn(value)) return;
+        
+        var loopStart = engine.getValue(group, "loop_start_position");
+        
+        if (loopStart !== -1) {
+            // Loop exists: toggle it (reloop/exit)
+            engine.setValue(group, "reloop_toggle", 1);
+        } else {
+            // No loop: activate auto beatloop
+            if (MC2000.isShiftActive()) {
+                // Shift: 8-beat loop
+                engine.setValue(group, "beatloop_8_activate", 1);
+            } else {
+                // Normal: 4-beat loop
+                engine.setValue(group, "beatloop_4_activate", 1);
+            }
+        }
+    };
+    this.reloopExitBtn.output = function(value) {
+        MC2000.setLed(self.deckNumber, MC2000.leds.autoloop, value ? 1 : 0);
+    };
+    this.reloopExitBtn.connect = function() {
+        engine.makeConnection(this.group, "loop_enabled", this.output.bind(this));
     };
 
     // Hotcues: using HotcueButton components
@@ -593,8 +944,26 @@ MC2000.Deck = function(group) {
     // Hotcue input handler
     this.hotcueInput = function(control, value, _status) {
         var n = MC2000.mapHotcue(control);
-        if (n >= 1 && n <= 4 && this.hotcueButtons[n - 1]) {
-            this.hotcueButtons[n - 1].input(0, 0, value, 0, this.hotcueButtons[n - 1].group);
+        if (n < 1 || n > 4 || !this.hotcueButtons[n - 1]) return;
+        
+        if (MC2000.isButtonOn(value)) {
+            // Button pressed
+            if (MC2000.isShiftActive()) {
+                // Shift: delete hotcue if it exists
+                var pos = engine.getValue(group, "hotcue_" + n + "_position");
+                if (pos !== -1) {
+                    engine.setValue(group, "hotcue_" + n + "_clear", 1);
+                }
+            } else {
+                // Normal: activate hotcue (set if not set, jump if set)
+                engine.setValue(group, "hotcue_" + n + "_activate", 1);
+            }
+        } else {
+            // Button released
+            if (!MC2000.isShiftActive()) {
+                // Release the activate
+                engine.setValue(group, "hotcue_" + n + "_activate", 0);
+            }
         }
     };
 };
@@ -610,7 +979,7 @@ MC2000.buildComponents = function() {
     // Apply current shift state and connect LEDs
     Object.keys(MC2000.decks).forEach(function(g) {
         var d = MC2000.decks[g];
-        d.applyShiftState(MC2000.shift);
+        d.applyShiftState(MC2000.isShiftActive());
         
         // Connect component LEDs
         if (d.play && d.play.connect) d.play.connect();
@@ -618,8 +987,10 @@ MC2000.buildComponents = function() {
         if (d.sync && d.sync.connect) d.sync.connect();
         if (d.keylock && d.keylock.connect) d.keylock.connect();
         if (d.pfl && d.pfl.connect) d.pfl.connect();
+        if (d.sampleModeToggle && d.sampleModeToggle.connect) d.sampleModeToggle.connect();
         if (d.loopInBtn && d.loopInBtn.connect) d.loopInBtn.connect();
         if (d.loopOutBtn && d.loopOutBtn.connect) d.loopOutBtn.connect();
+        if (d.reloopExitBtn && d.reloopExitBtn.connect) d.reloopExitBtn.connect();
         
         // Connect hotcue button LEDs
         if (d.hotcueButtons) {
@@ -636,241 +1007,259 @@ MC2000.buildComponents = function() {
 
 //////////////////////////////
 // Transport handlers       //
+// All handlers below are wrapper functions that delegate to deck components
+// for proper encapsulation and component-based architecture
 //////////////////////////////
 MC2000.playButton = function(channel, control, value, status, group) {
-    var d = MC2000.decks && MC2000.decks[group];
-    if (d && d.play && d.play.input) {
-        MC2000.debugLog("playButton: Using component");
-        d.play.input(channel, control, value, status, group);
-    } else {
-        MC2000.debugLog("playButton: Using fallback");
-        if (!MC2000.isButtonOn(value)) return;
-        script.toggleControl(group, "play");
-    }
+    MC2000.decks[group].play.input(channel, control, value, status, group);
 };
 
 MC2000.cueButton = function(channel, control, value, status, group) {
-    var d = MC2000.decks && MC2000.decks[group];
-    if (d && d.cue && d.cue.input) {
-        MC2000.debugLog("cueButton: Using component");
-        // Ensure shift state is applied
-        d.applyShiftState(MC2000.shift);
-        d.cue.input(channel, control, value, status, group);
-    } else {
-        MC2000.debugLog("cueButton: Using fallback");
-        if (!MC2000.isButtonOn(value)) return;
-        if (MC2000.shift) {
-            engine.setValue(group, "cue_gotoandplay", 1);
-        } else {
-            engine.setValue(group, "cue_default", 1);
-        }
+    MC2000.decks[group].applyShiftState(MC2000.isShiftActive());
+    if (MC2000.debugMode) {
+        MC2000.debugLog(
+            "cueButton: value=" + value +
+            " pressed=" + MC2000.isButtonOn(value) +
+            " shiftActive=" + MC2000.isShiftActive() +
+            " play_indicator=" + engine.getValue(group, "play_indicator")
+        );
     }
+    MC2000.decks[group].cue.input(channel, control, value, status, group);
 };
 
 MC2000.syncButton = function(channel, control, value, status, group) {
-    var d = MC2000.decks && MC2000.decks[group];
-    if (d && d.sync && d.sync.input) {
-        MC2000.debugLog("syncButton: Using component");
-        d.applyShiftState(MC2000.shift);
-        d.sync.input(channel, control, value, status, group);
-    } else {
-        MC2000.debugLog("syncButton: Using fallback");
-        if (!MC2000.isButtonOn(value)) return;
-        if (MC2000.shift) {
-            script.toggleControl(group, "sync_enabled");
-        } else {
-            engine.setValue(group, "beatsync", 1);
-        }
-    }
+    MC2000.decks[group].applyShiftState(MC2000.isShiftActive());
+    MC2000.decks[group].sync.input(channel, control, value, status, group);
 };
 
 MC2000.keylockButton = function(channel, control, value, status, group) {
-    var d = MC2000.decks && MC2000.decks[group];
-    if (d && d.keylock && d.keylock.input) {
-        MC2000.debugLog("keylockButton: Using component");
-        d.keylock.input(channel, control, value, status, group);
-    } else {
-        MC2000.debugLog("keylockButton: Using fallback");
-        if (!MC2000.isButtonOn(value)) return;
-        script.toggleControl(group, "keylock");
-    }
+    MC2000.decks[group].keylock.input(channel, control, value, status, group);
+};
+
+MC2000.vinylModeButton = function(channel, control, value, status, group) {
+    MC2000.decks[group].vinylMode.input(channel, control, value, status, group);
 };
 
 MC2000.pflButton = function(channel, control, value, status, group) {
-    var d = MC2000.decks && MC2000.decks[group];
-    if (d && d.pfl && d.pfl.input) {
-        d.pfl.input(channel, control, value, status, group);
-    } else {
-        if (!MC2000.isButtonOn(value)) return;
-        script.toggleControl(group, "pfl");
+    var wasPressed = MC2000.isButtonOn(value);
+    // If shift is held and PFL is pressed, toggle shift lock
+    if (wasPressed && MC2000.shiftHeld) {
+        MC2000.shiftLock = !MC2000.shiftLock;
+        MC2000.updateShiftState();
+        MC2000.blinkShiftLock(); // Blink for feedback
+        if (MC2000.debugMode) MC2000.debugLog("Shift lock " + (MC2000.shiftLock ? "ENABLED" : "DISABLED"));
+        return;
     }
+    // Otherwise, normal PFL logic
+    MC2000.decks[group].pfl.input(channel, control, value, status, group);
+};
+
+//////////////////////////////
+// Sample Mode Toggle       //
+//////////////////////////////
+MC2000.sampleModeToggle = function(channel, control, value, status, group) {
+    MC2000.decks[group].sampleModeToggle.input(channel, control, value, status, group);
+};
+
+//////////////////////////////
+// Load Track               //
+//////////////////////////////
+MC2000.loadTrack = function(channel, control, value, status, group) {
+    MC2000.decks[group].loadTrackBtn.input(channel, control, value, status, group);
 };
 
 //////////////////////////////
 // Track Gain knob          //
 //////////////////////////////
 MC2000.trackGain = function(channel, control, value, status, group) {
-    var d = MC2000.decks && MC2000.decks[group];
-    if (d && d.trackGain && d.trackGain.input) {
-        d.trackGain.input(channel, control, value, status, group);
-    } else {
-        // Fallback: convert CC value 0-127 to 0-1
-        engine.setParameter(group, "pregain", value / 127.0);
-    }
+    MC2000.decks[group].trackGain.input(channel, control, value, status, group);
 };
 
 //////////////////////////////
 // Volume fader             //
 //////////////////////////////
 MC2000.volumeFader = function(channel, control, value, status, group) {
-    var d = MC2000.decks && MC2000.decks[group];
-    if (d && d.volume && d.volume.input) {
-        d.volume.input(channel, control, value, status, group);
-    } else {
-        // Fallback: convert CC value 0-127 to 0-1
-        engine.setParameter(group, "volume", value / 127.0);
-    }
+    MC2000.decks[group].volume.input(channel, control, value, status, group);
 };
 
 //////////////////////////////
 // EQ controls              //
 //////////////////////////////
 MC2000.eqHigh = function(channel, control, value, status, group) {
-    var d = MC2000.decks && MC2000.decks[group];
-    if (d && d.eqHigh && d.eqHigh.input) {
-        d.eqHigh.input(channel, control, value, status, group);
-    } else {
-        // Fallback: convert CC value 0-127 to 0-1
-        var eqGroup = "[EqualizerRack1_" + group + "_Effect1]";
-        engine.setParameter(eqGroup, "parameter3", value / 127.0);
-    }
+    MC2000.decks[group].eqHigh.input(channel, control, value, status, group);
 };
 
 MC2000.eqMid = function(channel, control, value, status, group) {
-    var d = MC2000.decks && MC2000.decks[group];
-    if (d && d.eqMid && d.eqMid.input) {
-        d.eqMid.input(channel, control, value, status, group);
-    } else {
-        // Fallback: convert CC value 0-127 to 0-1
-        var eqGroup = "[EqualizerRack1_" + group + "_Effect1]";
-        engine.setParameter(eqGroup, "parameter2", value / 127.0);
-    }
+    MC2000.decks[group].eqMid.input(channel, control, value, status, group);
 };
 
 MC2000.eqLow = function(channel, control, value, status, group) {
-    var d = MC2000.decks && MC2000.decks[group];
-    if (d && d.eqLow && d.eqLow.input) {
-        d.eqLow.input(channel, control, value, status, group);
-    } else {
-        // Fallback: convert CC value 0-127 to 0-1
-        var eqGroup = "[EqualizerRack1_" + group + "_Effect1]";
-        engine.setParameter(eqGroup, "parameter1", value / 127.0);
-    }
+    MC2000.decks[group].eqLow.input(channel, control, value, status, group);
 };
 
 //////////////////////////////
 // Master Controls          //
 //////////////////////////////
 MC2000.masterVolume = function(channel, control, value, status, group) {
-    if (MC2000.masterVolumePot && MC2000.masterVolumePot.input) {
-        MC2000.masterVolumePot.input(channel, control, value, status, group);
-    } else {
-        // Fallback: convert CC value 0-127 to 0-1
-        engine.setParameter("[Master]", "gain", value / 127.0);
-    }
+    MC2000.masterVolumePot.input(channel, control, value, status, group);
 };
 
 MC2000.crossfader = function(channel, control, value, status, group) {
-    if (MC2000.crossfaderPot && MC2000.crossfaderPot.input) {
-        MC2000.crossfaderPot.input(channel, control, value, status, group);
-    } else {
-        // Fallback: convert CC value 0-127 to -1 to 1
-        var normalized = (value / 127.0) * 2 - 1; // -1 (left) to 1 (right)
-        engine.setValue("[Master]", "crossfader", normalized);
-    }
+    MC2000.crossfaderPot.input(channel, control, value, status, group);
 };
 
 MC2000.headphoneVolume = function(channel, control, value, status, group) {
-    if (MC2000.headphoneVolumePot && MC2000.headphoneVolumePot.input) {
-        MC2000.headphoneVolumePot.input(channel, control, value, status, group);
-    } else {
-        // Fallback: convert CC value 0-127 to 0-1
-        engine.setParameter("[Master]", "headVolume", value / 127.0);
-    }
+    MC2000.headphoneVolumePot.input(channel, control, value, status, group);
 };
 
 MC2000.headphoneMix = function(channel, control, value, status, group) {
-    if (MC2000.headphoneMixPot && MC2000.headphoneMixPot.input) {
-        MC2000.headphoneMixPot.input(channel, control, value, status, group);
-    } else {
-        // Fallback: convert CC value 0-127 to 0-1
-        engine.setParameter("[Master]", "headMix", value / 127.0);
-    }
+    MC2000.headphoneMixPot.input(channel, control, value, status, group);
 };
 
 //////////////////////////////
 // Pitch fader (absolute)   //
 //////////////////////////////
 MC2000.pitchFader = function(channel, control, value, status, group) {
-    var d = MC2000.decks && MC2000.decks[group];
-    if (d && d.rate && d.rate.input) {
-        // Convert to parameter range 0..1; Mixxx maps to +/- rateRange
-        d.rate.input(channel, control, value, status, group);
-    } else {
-        // value 0..127 -> rate control (-range..+range)
-        var rateRange = engine.getValue(group, "rateRange");
-        var norm = value / 127.0; // 0..1
-        var scaled = (norm * 2.0 - 1.0) * rateRange; // -rateRange..+rateRange
-        engine.setValue(group, "rate", scaled);
-    }
+    MC2000.decks[group].rate.input(channel, control, value, status, group);
 };
 
 //////////////////////////////
 // Pitch Bend buttons       //
 //////////////////////////////
 MC2000.pitchBendUp = function(channel, control, value, status, group) {
-    var d = MC2000.decks && MC2000.decks[group];
-    if (d && d.pitchBendUpBtn && d.pitchBendUpBtn.input) {
-        d.pitchBendUpBtn.input(channel, control, value, status, group);
-    } else {
-        engine.setValue(group, "rate_temp_up", MC2000.isButtonOn(value) ? 1 : 0);
-    }
+    MC2000.decks[group].pitchBendUpBtn.input(channel, control, value, status, group);
 };
 
 MC2000.pitchBendDown = function(channel, control, value, status, group) {
-    var d = MC2000.decks && MC2000.decks[group];
-    if (d && d.pitchBendDownBtn && d.pitchBendDownBtn.input) {
-        d.pitchBendDownBtn.input(channel, control, value, status, group);
-    } else {
-        engine.setValue(group, "rate_temp_down", MC2000.isButtonOn(value) ? 1 : 0);
-    }
+    MC2000.decks[group].pitchBendDownBtn.input(channel, control, value, status, group);
 };
 
 //////////////////////////////
 // Jog Wheel (scratch mode) //
 //////////////////////////////
+/**
+ * Integrated JogWheel handler (adapted from JogWheelScratch.js)
+ * Handles touch sensor (0x51) rotation for scratch/scrub mode.
+ * 
+ * Features:
+ * - When playing: Scratch mode with velocity scaling
+ * - When paused: Fine scrubbing of playposition
+ * - Timer-based release detection (50ms idle = stop scratching)
+ * - Reduced drift with heavier vinyl settings
+ */
 MC2000.jogTouch = function(channel, control, value, status, group) {
-    var pressed = MC2000.isButtonOn(value); // NOTE: confirm transmissions (note on/off or 0x7F/0x00)
-    if (pressed) {
-        engine.scratchEnable(MC2000.deckIndex(group), MC2000.jogResolution, MC2000.jogRpm, MC2000.jogScratchAlpha, MC2000.jogScratchBeta);
-        MC2000.deck[group].scratchMode = true;
+    var deckNum = MC2000.deckIndex(group);
+    
+    // Convert relative encoder value to signed movement
+    // MC2000 uses 0x40 as center, values wrap around 0x00-0x7F
+    var movement = value - MC2000.jogCenter;
+    
+    // Normalize to signed delta: handle wrap-around
+    if (movement > 64) movement -= 128;
+    if (movement < -64) movement += 128;
+    
+    if (movement === 0) return; // No movement, ignore
+    
+    // Time-based spin detection for velocity scaling
+    var now = Date.now();
+    var timeDiff = now - MC2000.jogLastTickTime[deckNum];
+    if (timeDiff > 150) {
+        // Reset tick count if more than 150ms since last movement
+        MC2000.jogTickCount[deckNum] = 0;
+    }
+    MC2000.jogTickCount[deckNum]++;
+    MC2000.jogLastTickTime[deckNum] = now;
+    
+    // Speed factor ramps up with rapid ticks (capped at MAX_SCALING)
+    var speedFactor = Math.min(1 + MC2000.jogTickCount[deckNum] / 10, MC2000.jogMaxScaling);
+    
+    var isPlaying = engine.getValue(group, "play") === 1;
+    
+    if (isPlaying) {
+        // -------------------------------------------------
+        // SCRATCH MODE (when playing)
+        // -------------------------------------------------
+        if (!MC2000.jogScratchActive[deckNum]) {
+            // Enable slip mode when starting scratch - track continues in background
+            var slipEnabled = engine.getValue(group, "slip_enabled");
+            if (!slipEnabled) {
+                engine.setValue(group, "slip_enabled", 1);
+                if (MC2000.debugMode) MC2000.debugLog("Slip mode enabled: " + group);
+            }
+            
+            engine.scratchEnable(deckNum,
+                               MC2000.jogResolution,
+                               MC2000.jogRpm,
+                               MC2000.jogScratchAlpha,
+                               MC2000.jogScratchBeta);
+            MC2000.jogScratchActive[deckNum] = true;
+            MC2000.deck[group].scratchMode = true;
+            if (MC2000.debugMode) MC2000.debugLog("Scratch enabled: " + group);
+        }
+        
+        // Apply movement with velocity scaling
+        engine.scratchTick(deckNum, movement * speedFactor);
+        
+        // Reset release timer - disable scratch after 50ms idle
+        if (MC2000.jogReleaseTimer[deckNum] !== null) {
+            engine.stopTimer(MC2000.jogReleaseTimer[deckNum]);
+            MC2000.jogReleaseTimer[deckNum] = null;
+        }
+        MC2000.jogReleaseTimer[deckNum] = engine.beginTimer(50, function() {
+            engine.scratchDisable(deckNum);
+            MC2000.jogScratchActive[deckNum] = false;
+            MC2000.deck[group].scratchMode = false;
+            // Disable slip mode when releasing - track catches up
+            engine.setValue(group, "slip_enabled", 0);
+            MC2000.jogReleaseTimer[deckNum] = null;
+            if (MC2000.debugMode) MC2000.debugLog("Scratch disabled, slip off: " + group);
+        }, true); // one-shot timer
+        
     } else {
-        engine.scratchDisable(MC2000.deckIndex(group));
-        MC2000.deck[group].scratchMode = false;
+        // -------------------------------------------------
+        // SCRUB MODE (when paused)
+        // -------------------------------------------------
+        // Fine scrubbing: slow movements = super fine, fast spins = slight boost
+        var effectiveScaling = (MC2000.jogTickCount[deckNum] > 3) ? speedFactor : 1;
+        
+        var pos = engine.getValue(group, "playposition");
+        pos += (movement * effectiveScaling * MC2000.jogScrubScaling);
+        
+        // Clamp to valid range 0..1
+        if (pos < 0) pos = 0;
+        if (pos > 1) pos = 1;
+        
+        engine.setValue(group, "playposition", pos);
+        
+        if (MC2000.debugMode) {
+            MC2000.debugLog("Scrub: " + group + " movement=" + movement + " pos=" + pos.toFixed(4));
+        }
     }
 };
 
+// Outer wheel (0x52) uses pitch bend when not scratching (CDJ mode)
 MC2000.jogWheel = function(channel, control, value, status, group) {
-    // Relative delta around center 0x40
-    MC2000.debugLog("jogWheel: value=" + value + " group=" + group);
-    var delta = value - MC2000.jogCenter;
-    if (MC2000.deck[group].scratchMode) {
-        MC2000.debugLog("jogWheel: scratch mode active");
-        engine.scratchTick(MC2000.deckIndex(group), delta);
+    var deckNum = MC2000.deckIndex(group);
+    
+    // Convert relative encoder value to signed movement
+    var movement = value - MC2000.jogCenter;
+    
+    // Normalize to signed delta: handle wrap-around
+    if (movement > 64) movement -= 128;
+    if (movement < -64) movement += 128;
+    
+    if (movement === 0) return; // No movement, ignore
+    
+    // Check if currently scratching (touch sensor active)
+    if (MC2000.jogScratchActive[deckNum]) {
+        // Touch sensor is active, use scratch mode
+        MC2000.jogTouch(channel, control, value, status, group);
     } else {
-        // pitch bend style
-        MC2000.debugLog("jogWheel: scratch mode inactive");
-        engine.setValue(group, "jog", delta * MC2000.jogScale);
+        // No touch - use pitch bend for CDJ-style nudging
+        if (MC2000.debugMode) {
+            MC2000.debugLog("jogWheel: pitch bend mode, movement=" + movement);
+        }
+        engine.setValue(group, "jog", movement * MC2000.jogPitchScale);
     }
 };
 
@@ -884,21 +1273,9 @@ MC2000.deckIndex = function(group) {
 // Hotcues (single pad demo)//
 //////////////////////////////
 MC2000.hotcuePad = function(channel, control, value, status, group) {
-    var d = MC2000.decks && MC2000.decks[group];
+    var d = MC2000.decks[group];
     if (d && d.hotcueInput) {
         d.hotcueInput(control, value, status);
-        return;
-    }
-    // Fallback legacy behavior
-    if (!MC2000.isButtonOn(value)) return;
-    var hotcueNumber = MC2000.mapHotcue(control);
-    if (hotcueNumber < 1) return;
-    var pos = engine.getValue(group, "hotcue_" + hotcueNumber + "_position");
-    if (MC2000.shift) {
-        if (pos !== -1) engine.setValue(group, "hotcue_" + hotcueNumber + "_clear", 1);
-    } else {
-        if (pos === -1) engine.setValue(group, "hotcue_" + hotcueNumber + "_activate", 1);
-        else engine.setValue(group, "hotcue_" + hotcueNumber + "_gotoandplay", 1);
     }
 };
 
@@ -914,230 +1291,158 @@ MC2000.mapHotcue = function(midino) {
 };
 
 //////////////////////////////
-// Loop handlers (add later)//
+// Loop handlers            //
 //////////////////////////////
 MC2000.loopIn = function(channel, control, value, status, group) {
-    var d = MC2000.decks && MC2000.decks[group];
-    if (d && d.loopInBtn && d.loopInBtn.input) {
-        d.loopInBtn.input(channel, control, value, status, group);
-        return;
-    }
-    if (!MC2000.isButtonOn(value)) return;
-    if (MC2000.shift) engine.setValue(group, "reloop_toggle", 1);
-    else engine.setValue(group, "loop_in", 1);
+    MC2000.decks[group].loopInBtn.input(channel, control, value, status, group);
 };
 
 MC2000.loopOut = function(channel, control, value, status, group) {
-    var d = MC2000.decks && MC2000.decks[group];
-    if (d && d.loopOutBtn && d.loopOutBtn.input) {
-        d.loopOutBtn.input(channel, control, value, status, group);
-        return;
-    }
-    if (!MC2000.isButtonOn(value)) return;
-    if (MC2000.shift) engine.setValue(group, "loop_exit", 1);
-    else engine.setValue(group, "loop_out", 1);
+    MC2000.decks[group].loopOutBtn.input(channel, control, value, status, group);
 };
 
 MC2000.reloopExit = function(channel, control, value, status, group) {
-    if (!MC2000.isButtonOn(value)) return;
-    var loopEnabled = engine.getValue(group, "loop_enabled");
-    if (loopEnabled) {
-        engine.setValue(group, "reloop_toggle", 1); // Exit loop
-    } else {
-        engine.setValue(group, "reloop_toggle", 1); // Re-enable last loop
-    }
+    MC2000.decks[group].reloopExitBtn.input(channel, control, value, status, group);
 };
 
-// Optional handlers if you add them in XML later
 MC2000.loopHalve = function(channel, control, value, status, group) {
-    var d = MC2000.decks && MC2000.decks[group];
-    if (d && d.loopHalveBtn) d.loopHalveBtn.input(channel, control, value, status, group);
-    else if (MC2000.isButtonOn(value)) engine.setValue(group, "loop_halve", 1);
+    MC2000.decks[group].loopHalveBtn.input(channel, control, value, status, group);
 };
 
 MC2000.loopDouble = function(channel, control, value, status, group) {
-    var d = MC2000.decks && MC2000.decks[group];
-    if (d && d.loopDoubleBtn) d.loopDoubleBtn.input(channel, control, value, status, group);
-    else if (MC2000.isButtonOn(value)) engine.setValue(group, "loop_double", 1);
+    MC2000.decks[group].loopDoubleBtn.input(channel, control, value, status, group);
 };
 
 //////////////////////////////
 // FX Unit Handlers         //
 //////////////////////////////
-// FX Unit 1
+// Generic FX effect toggle handler
+MC2000.fxEffectToggle = function(unitNum, effectNum, channel, control, value, status, group) {
+    MC2000.fxUnits[unitNum].effects[effectNum].toggle.input(channel, control, value, status, group);
+};
+
+// Generic FX effect meta handler
+MC2000.fxEffectMeta = function(unitNum, effectNum, channel, control, value, status, group) {
+    MC2000.fxUnits[unitNum].effects[effectNum].meta.input(channel, control, value, status, group);
+};
+
+// Generic FX wet/dry handler
+MC2000.fxWetDry = function(unitNum, channel, control, value, status, group) {
+    MC2000.fxUnits[unitNum].wetDryEncoder.input(channel, control, value, status, group);
+};
+
+// Unit 1 - Effect toggles
 MC2000.fx1_effect1_toggle = function(channel, control, value, status, group) {
-    var fx = MC2000.fxUnits && MC2000.fxUnits[1];
-    if (fx && fx.effect1Toggle && fx.effect1Toggle.input) {
-        fx.effect1Toggle.input(channel, control, value, status, group);
-    } else {
-        if (!MC2000.isButtonOn(value)) return;
-        script.toggleControl("[EffectRack1_EffectUnit1_Effect1]", "enabled");
-    }
+    MC2000.fxEffectToggle(1, 1, channel, control, value, status, group);
 };
-
 MC2000.fx1_effect2_toggle = function(channel, control, value, status, group) {
-    var fx = MC2000.fxUnits && MC2000.fxUnits[1];
-    if (fx && fx.effect2Toggle && fx.effect2Toggle.input) {
-        fx.effect2Toggle.input(channel, control, value, status, group);
-    } else {
-        if (!MC2000.isButtonOn(value)) return;
-        script.toggleControl("[EffectRack1_EffectUnit1_Effect2]", "enabled");
-    }
+    MC2000.fxEffectToggle(1, 2, channel, control, value, status, group);
 };
-
 MC2000.fx1_effect3_toggle = function(channel, control, value, status, group) {
-    var fx = MC2000.fxUnits && MC2000.fxUnits[1];
-    if (fx && fx.effect3Toggle && fx.effect3Toggle.input) {
-        fx.effect3Toggle.input(channel, control, value, status, group);
-    } else {
-        if (!MC2000.isButtonOn(value)) return;
-        script.toggleControl("[EffectRack1_EffectUnit1_Effect3]", "enabled");
-    }
+    MC2000.fxEffectToggle(1, 3, channel, control, value, status, group);
 };
 
-// FX Unit 1 - Meta pots
+// Unit 1 - Effect meta pots
 MC2000.fx1_effect1_meta = function(channel, control, value, status, group) {
-    var fx = MC2000.fxUnits && MC2000.fxUnits[1];
-    if (fx && fx.effect1Meta && fx.effect1Meta.input) {
-        fx.effect1Meta.input(channel, control, value, status, group);
-    } else {
-        engine.setParameter("[EffectRack1_EffectUnit1_Effect1]", "meta", value / 127.0);
-    }
+    MC2000.fxEffectMeta(1, 1, channel, control, value, status, group);
 };
-
 MC2000.fx1_effect2_meta = function(channel, control, value, status, group) {
-    var fx = MC2000.fxUnits && MC2000.fxUnits[1];
-    if (fx && fx.effect2Meta && fx.effect2Meta.input) {
-        fx.effect2Meta.input(channel, control, value, status, group);
-    } else {
-        engine.setParameter("[EffectRack1_EffectUnit1_Effect2]", "meta", value / 127.0);
-    }
+    MC2000.fxEffectMeta(1, 2, channel, control, value, status, group);
 };
-
 MC2000.fx1_effect3_meta = function(channel, control, value, status, group) {
-    var fx = MC2000.fxUnits && MC2000.fxUnits[1];
-    if (fx && fx.effect3Meta && fx.effect3Meta.input) {
-        fx.effect3Meta.input(channel, control, value, status, group);
-    } else {
-        engine.setParameter("[EffectRack1_EffectUnit1_Effect3]", "meta", value / 127.0);
-    }
+    MC2000.fxEffectMeta(1, 3, channel, control, value, status, group);
 };
 
-// FX Unit 2
+// Unit 2 - Effect toggles
 MC2000.fx2_effect1_toggle = function(channel, control, value, status, group) {
-    var fx = MC2000.fxUnits && MC2000.fxUnits[2];
-    if (fx && fx.effect1Toggle && fx.effect1Toggle.input) {
-        fx.effect1Toggle.input(channel, control, value, status, group);
-    } else {
-        if (!MC2000.isButtonOn(value)) return;
-        script.toggleControl("[EffectRack1_EffectUnit2_Effect1]", "enabled");
-    }
+    MC2000.fxEffectToggle(2, 1, channel, control, value, status, group);
 };
-
 MC2000.fx2_effect2_toggle = function(channel, control, value, status, group) {
-    var fx = MC2000.fxUnits && MC2000.fxUnits[2];
-    if (fx && fx.effect2Toggle && fx.effect2Toggle.input) {
-        fx.effect2Toggle.input(channel, control, value, status, group);
-    } else {
-        if (!MC2000.isButtonOn(value)) return;
-        script.toggleControl("[EffectRack1_EffectUnit2_Effect2]", "enabled");
-    }
+    MC2000.fxEffectToggle(2, 2, channel, control, value, status, group);
 };
-
 MC2000.fx2_effect3_toggle = function(channel, control, value, status, group) {
-    var fx = MC2000.fxUnits && MC2000.fxUnits[2];
-    if (fx && fx.effect3Toggle && fx.effect3Toggle.input) {
-        fx.effect3Toggle.input(channel, control, value, status, group);
-    } else {
-        if (!MC2000.isButtonOn(value)) return;
-        script.toggleControl("[EffectRack1_EffectUnit2_Effect3]", "enabled");
-    }
+    MC2000.fxEffectToggle(2, 3, channel, control, value, status, group);
 };
 
-// FX Unit 2 - Meta pots
+// Unit 2 - Effect meta pots
 MC2000.fx2_effect1_meta = function(channel, control, value, status, group) {
-    var fx = MC2000.fxUnits && MC2000.fxUnits[2];
-    if (fx && fx.effect1Meta && fx.effect1Meta.input) {
-        fx.effect1Meta.input(channel, control, value, status, group);
-    } else {
-        engine.setParameter("[EffectRack1_EffectUnit2_Effect1]", "meta", value / 127.0);
-    }
+    MC2000.fxEffectMeta(2, 1, channel, control, value, status, group);
 };
-
 MC2000.fx2_effect2_meta = function(channel, control, value, status, group) {
-    var fx = MC2000.fxUnits && MC2000.fxUnits[2];
-    if (fx && fx.effect2Meta && fx.effect2Meta.input) {
-        fx.effect2Meta.input(channel, control, value, status, group);
-    } else {
-        engine.setParameter("[EffectRack1_EffectUnit2_Effect2]", "meta", value / 127.0);
-    }
+    MC2000.fxEffectMeta(2, 2, channel, control, value, status, group);
 };
-
 MC2000.fx2_effect3_meta = function(channel, control, value, status, group) {
-    var fx = MC2000.fxUnits && MC2000.fxUnits[2];
-    if (fx && fx.effect3Meta && fx.effect3Meta.input) {
-        fx.effect3Meta.input(channel, control, value, status, group);
-    } else {
-        engine.setParameter("[EffectRack1_EffectUnit2_Effect3]", "meta", value / 127.0);
-    }
+    MC2000.fxEffectMeta(2, 3, channel, control, value, status, group);
 };
 
-// FX Unit 1 Wet/Dry encoder
+// Unit wet/dry encoders
 MC2000.fx1_wetDry = function(channel, control, value, status, group) {
-    var fx = MC2000.fxUnits && MC2000.fxUnits[1];
-    if (fx && fx.wetDryEncoder && fx.wetDryEncoder.input) {
-        fx.wetDryEncoder.input(channel, control, value, status, group);
-    } else {
-        // Fallback for relative encoder
-        var currentMix = engine.getParameter("[EffectRack1_EffectUnit1]", "mix");
-        if (value === 1) {
-            engine.setParameter("[EffectRack1_EffectUnit1]", "mix", Math.max(0, currentMix - 0.05));
-        } else if (value === 127) {
-            engine.setParameter("[EffectRack1_EffectUnit1]", "mix", Math.min(1, currentMix + 0.05));
-        }
-    }
+    MC2000.fxWetDry(1, channel, control, value, status, group);
 };
-
-// FX Unit 2 Wet/Dry encoder
 MC2000.fx2_wetDry = function(channel, control, value, status, group) {
-    var fx = MC2000.fxUnits && MC2000.fxUnits[2];
-    if (fx && fx.wetDryEncoder && fx.wetDryEncoder.input) {
-        fx.wetDryEncoder.input(channel, control, value, status, group);
-    } else {
-        // Fallback for relative encoder
-        var currentMix = engine.getParameter("[EffectRack1_EffectUnit2]", "mix");
-        if (value === 1) {
-            engine.setParameter("[EffectRack1_EffectUnit2]", "mix", Math.max(0, currentMix - 0.05));
-        } else if (value === 127) {
-            engine.setParameter("[EffectRack1_EffectUnit2]", "mix", Math.min(1, currentMix + 0.05));
-        }
-    }
+    MC2000.fxWetDry(2, channel, control, value, status, group);
 };
 
 //////////////////////////////
 // Library handlers         //
 //////////////////////////////
 MC2000.ScrollVertical = function(channel, control, value, status, group) {
-    // Verify this is being called for Library group
-    if (group !== "[Library]") {
-        MC2000.debugLog("ScrollVertical: Wrong group " + group);
-        return;
-    }
-    
-    if (MC2000.scrollVerticalEncoder && MC2000.scrollVerticalEncoder.input) {
-        MC2000.debugLog("ScrollVertical: Using encoder component");
-        MC2000.scrollVerticalEncoder.input(channel, control, value, status, group); 
-    } else {
-        MC2000.debugLog("ScrollVertical: Using fallback");
-        // Fallback for relative encoder
-        if (value === 1) {
-            engine.setValue("[Library]", "MoveUp", 1);
-        } else if (value === 127) {
-            engine.setValue("[Library]", "MoveDown", 1);
-        }
-    }
+    MC2000.scrollVerticalEncoder.input(channel, control, value, status, group);
 };
 
+//////////////////////////////
+// Sampler handlers         //
+//////////////////////////////
+// MIDI note to sampler number mapping
+MC2000.samplerMidiMap = {
+    // Bank 1 (Deck 1 - channel 0x90)
+    0x21: 1,
+    0x22: 2,
+    0x23: 3,
+    0x24: 4,
+    // Bank 2 (Deck 2 - channel 0x91)
+    0x31: 5,
+    0x32: 6,
+    0x33: 7,
+    0x34: 8
+};
+
+// Generic handler using MIDI note lookup
+MC2000.samplerPlayButtonGeneric = function(channel, control, value, status) {
+    var samplerNum = MC2000.samplerMidiMap[control];
+    if (!samplerNum) {
+        if (MC2000.debugMode) MC2000.debugLog("Unknown sampler MIDI note: 0x" + control.toString(16));
+        return;
+    }
+    var group = "[Sampler" + samplerNum + "]";
+    MC2000.samplers[samplerNum].playButton.input(channel, control, value, status, group);
+};
+
+// Individual handlers for XML bindings (delegate to generic handler)
+MC2000.sampler1PlayButton = function(channel, control, value, status, group) {
+    MC2000.samplerPlayButtonGeneric(channel, control, value, status);
+};
+MC2000.sampler2PlayButton = function(channel, control, value, status, group) {
+    MC2000.samplerPlayButtonGeneric(channel, control, value, status);
+};
+MC2000.sampler3PlayButton = function(channel, control, value, status, group) {
+    MC2000.samplerPlayButtonGeneric(channel, control, value, status);
+};
+MC2000.sampler4PlayButton = function(channel, control, value, status, group) {
+    MC2000.samplerPlayButtonGeneric(channel, control, value, status);
+};
+MC2000.sampler5PlayButton = function(channel, control, value, status, group) {
+    MC2000.samplerPlayButtonGeneric(channel, control, value, status);
+};
+MC2000.sampler6PlayButton = function(channel, control, value, status, group) {
+    MC2000.samplerPlayButtonGeneric(channel, control, value, status);
+};
+MC2000.sampler7PlayButton = function(channel, control, value, status, group) {
+    MC2000.samplerPlayButtonGeneric(channel, control, value, status);
+};
+MC2000.sampler8PlayButton = function(channel, control, value, status, group) {
+    MC2000.samplerPlayButtonGeneric(channel, control, value, status);
+};
 
 //////////////////////////////
 // Debug utilities          //
@@ -1145,10 +1450,11 @@ MC2000.ScrollVertical = function(channel, control, value, status, group) {
 // Dump current controller state for debugging
 MC2000.debugDump = function() {
     MC2000.log("=== MC2000 Debug Dump ===");
-    MC2000.log("Shift state: " + MC2000.shift);
+    MC2000.log("Shift held: " + MC2000.shiftHeld + ", lock: " + MC2000.shiftLock + ", effective: " + MC2000.isShiftActive());
     MC2000.log("Debug mode: " + MC2000.debugMode);
     MC2000.log("Decks initialized: " + (MC2000.decks ? "Yes" : "No"));
     MC2000.log("FX units initialized: " + (MC2000.fxUnits ? "Yes" : "No"));
+    MC2000.log("Samplers initialized: " + (MC2000.samplers ? "Yes" : "No"));
 };
 
 //////////////////////////////
@@ -1161,7 +1467,7 @@ MC2000.debugDump = function() {
 // - Tune encoder sensitivities
 //
 // ENHANCEMENTS:
-// - Sampler deck controls (removed in favor of hotcues)
+// - Sampler deck controls (basic scaffolding added)
 // - Advanced shift layers for alternate pad modes
 // - Smart PFL auto-enable logic
 // - Rate range cycling
