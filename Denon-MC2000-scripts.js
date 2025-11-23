@@ -590,7 +590,7 @@ MC2000.FxUnit = function(unitNumber) {
         inKey: "mix"
     });
     // Store both input methods
-    this.wetDryEncoder.input = function(channel, control, value, status, group) {
+    this.wetDryEncoder.normalInput = function(channel, control, value, status, group) {
         MC2000.debugLog("FX Unit " + self.unitNumber + " Wet/Dry encoder: " + value);
         if (value === 1) {
             // Counterclockwise: decrease wet/dry mix
@@ -602,7 +602,7 @@ MC2000.FxUnit = function(unitNumber) {
     };
 
     // Shifted input method: adjust sampler volume instead. sampler index is the sa,pler number
-    this.wetDryEncoder.shift = function(channel, control, value, status, group) {
+    this.wetDryEncoder.shiftInput = function(channel, control, value, status, group) {
         // Use value to determine direction works in rev
         var direction = (value === 127) ? 1 : (value === 1 ? -1 : 0);
         if (direction === 0) return;
@@ -621,7 +621,9 @@ MC2000.FxUnit = function(unitNumber) {
         MC2000.debugLog("New volume for sampler " + focusIdx + ": " + engine.getValue(group, "volume"));
         if (MC2000.debugMode) MC2000.debugLog("Set volume for " + group + " to " + newVol);
     };
-
+    // Assign input methods
+    this.wetDryEncoder.shift = this.wetDryEncoder.shiftInput;  
+    this.wetDryEncoder.input = this.wetDryEncoder.normalInput;
     /**
      * Apply shift state to FX unit: sets wetDryEncoder input method.
      * @param {boolean} shifted - true if shift is active
