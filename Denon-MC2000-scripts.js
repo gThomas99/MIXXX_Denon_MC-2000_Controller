@@ -56,17 +56,17 @@ MC2000.leds = {
 	cue3: 			21,
 	cue4: 			23,
 
-	samp1_l: 		25,
-	samp2_l: 		27,
-	samp3_l: 		29,
-	samp4_l: 		32,
+	//samp1_l: 		25,
+	//samp2_l: 		27,
+	//samp3_l: 		29,
+	//samp4_l: 		32,
 
 	samples_l: 		35,
-	samp1_r: 		65,
-	samp2_r: 		67,
-	samp3_r: 		69,
+	//samp1_r: 		65,
+	//samp2_r: 		67,
+	//samp3_r: 		69,
 
-	samp4_r: 		71,
+	//samp4_r: 		71,
 	samples_r: 		73,
 	cue: 			38,
 	play: 			39, // was wrong in the spec sheet as decimal value
@@ -104,13 +104,20 @@ MC2000.leds = {
 // LED State & Manager (Incremental Skeleton Refactor Stage 1)
 // ------------------------------------------------------------
 // Purpose: Provide a unified, cache-aware API for LED control while
-// leaving existing legacy helpers (setLed/setLed2/allLed2Default) intact.
-// Subsequent stages can migrate individual calls to LedManager.set()/reflect().
+// minimizing redundant MIDI traffic to the controller hardware.
 // ------------------------------------------------------------
 
 MC2000.LED_STATE = { OFF: 0x4B, ON: 0x4A, BLINK: 0x4C };
 
 MC2000.LedManager = (function() {
+    
+    /**
+     * cache: Stores the last known status byte for each LED/control per deck.
+     * Key format is 'deck|code', where 'deck' is the deck number (1 or 2) and 'code' is the LED/control MIDI code.
+     * Value is the status byte representing the LED/control state (e.g., ON, OFF, BLINK).
+     * This cache is used to suppress redundant MIDI messages by only sending updates when the state changes,
+     * improving performance and reducing unnecessary traffic to the controller hardware.
+     */
     var cache = {}; // key: deck|code -> status byte
 
     // Build a table mapping LED symbolic names to their code and deck affinity.
@@ -249,29 +256,6 @@ MC2000.LedManager = (function() {
 
 
 
-/**
- * Blink the shift lock LED for the specified duration using LED Manager API.
- * Used for transient feedback (e.g. indicating a mode toggle).
- * @param {number} [durationMs=2000] How long to blink in milliseconds.
- */
-MC2000.blinkShiftLock = function(durationMs) {
-    durationMs = (typeof durationMs === 'number' && durationMs > 0) ? durationMs : 2000;
-    if (typeof engine === 'undefined' || !engine.beginTimer) {
-        if (MC2000.debugMode) MC2000.debugLog("blinkShiftLock: timer API missing, cannot blink");
-        return;
-    }
-    
-    // Calculate cycles: duration / interval / 2 (on+off = 1 blink cycle)
-    var blinkInterval = 500;
-    var cycles = Math.floor(durationMs / blinkInterval);
-    
-    // Use LedManager.blink for clean implementation
-    MC2000.LedManager.blink("shiftlock", blinkInterval, cycles);
-    
-    if (MC2000.debugMode) {
-        MC2000.debugLog("blinkShiftLock: blinking for " + durationMs + "ms (" + (cycles/2) + " cycles)");
-    }
-};
 
 //////////////////////////////
 // Tunable constants        //
@@ -417,8 +401,7 @@ MC2000.init = function(id) {
     });
 
     MC2000.LedManager.bulk(allLedsMap);
-     
-    
+        
     // Build Components-based structure with LED connections
     MC2000.buildComponents();
 
@@ -436,7 +419,8 @@ MC2000.init = function(id) {
 
 
     // Set default mixer levels (safe startup values)
-    MC2000.setDefaultMixerLevels();
+    //anoying if volume controls have not been moved afetr last MIXXX run
+    //MC2000.setDefaultMixerLevels();
     
     // After 1 second delay, reset all LEDs to defaults and enable PFL on deck 1
    
@@ -464,6 +448,7 @@ MC2000.toggleShift = function(_channel, _control, value) {
 };
 
 // Update effective shift state and apply to all decks, and update shift lock LED
+// loops over each group unit and calls their applyShiftState method if it exists   
 MC2000.updateShiftState = function() {
     var effectiveShift = MC2000.shiftHeld || MC2000.shiftLock;
     if (MC2000.decks) {
@@ -471,6 +456,13 @@ MC2000.updateShiftState = function() {
             var d = MC2000.decks[g];
             if (!d) return;
             if (d.applyShiftState) d.applyShiftState(effectiveShift);
+        });
+    }
+    if (MC2000.fxUnits) {  
+             Object.keys(MC2000.fxUnits).forEach(function(g){
+            var f = MC2000.fxUnits[g];
+            if (!f) return;
+            if (f.applyShiftState) f.applyShiftState(effectiveShift);
         });
     }
     // Update shift lock LED: ON if locked, OFF if not
@@ -514,10 +506,48 @@ MC2000.buildMasterControls = function() {
 // FX Units                 //
 //////////////////////////////
 MC2000.FxUnit = function(unitNumber) {
+        
     this.group = "[EffectRack1_EffectUnit" + unitNumber + "]";
     this.unitNumber = unitNumber;
     this.effects = [];
+    //focus is used by wetDry encoder shift method to determine which deck's sampler to adjust
+    // Set focus for FX unit: 1 for unit 1, 5 for unit 2
+    this.focus = (unitNumber === 1) ? 1 : 5;
+    //this.focus = 1;
+ 
     var self = this;
+     /**
+     * Increment the focus variable, wrapping within the correct sampler range for each deck.
+     * Deck 1: samplers 1-4; Deck 2: samplers 5-8
+     * @param {number} deckNumber - 1 or 2
+     * //deck number should match this.unitNumber
+     */
+    this.incrementFocus = function(deckNumber) {
+        MC2000.debugLog("FX Unit " + self.unitNumber + " Incrementing focus from " + this.focus);
+        if (deckNumber === 1) {
+            // Cycle through samplers 1-4
+            this.focus = (this.focus % 4) + 1;
+        } else {
+            // Cycle through samplers 5-8
+            this.focus = ((this.focus - 4) % 4) + 5;
+        }
+        // Blink sampler button LED for 750 ms, then restore original state
+        MC2000.debugLog("FX Unit " + self.unitNumber + " New focus is " + this.focus);
+        var ledName = "sampler" + this.focus;
+        // Get original LED state from cache
+        var cache = MC2000.LedManager._dumpCache();
+        var ledCode = MC2000.leds[ledName];
+        var cacheKey = deckNumber + '|' + ledCode;
+        var originalState = cache[cacheKey];
+        if (typeof originalState === 'undefined') originalState = MC2000.LED_STATE.OFF;
+        MC2000.debugLog("FX Unit " + self.unitNumber + " Blinking LED: " + ledName + " (original state: " + originalState + ")");
+        MC2000.LedManager.set(ledName, 'on', {deck: deckNumber});
+        engine.beginTimer(750, function() {
+            MC2000.LedManager.setRaw(ledName, originalState, {deck: deckNumber});
+            MC2000.debugLog("FX Unit " + self.unitNumber + " Restored LED: " + ledName + " to state: " + originalState);
+        }, true);
+    };
+
     
     // Build 3 effects per unit using array
     for (var i = 1; i <= 3; i++) {
@@ -559,15 +589,46 @@ MC2000.FxUnit = function(unitNumber) {
         group: this.group,
         inKey: "mix"
     });
-    // Custom input handler for relative encoder acting as pseudo pot
-    // reverse direction: CC 1 = decrease, CC 127 = increase
+    // Store both input methods
     this.wetDryEncoder.input = function(channel, control, value, status, group) {
+        MC2000.debugLog("FX Unit " + self.unitNumber + " Wet/Dry encoder: " + value);
         if (value === 1) {
             // Counterclockwise: decrease wet/dry mix
             this.inSetParameter(this.inGetParameter() + 0.05);
         } else if (value === 127) {
             // Clockwise: increase wet/dry mix
             this.inSetParameter(this.inGetParameter() - 0.05);
+        }
+    };
+
+    // Shifted input method: adjust sampler volume instead. sampler index is the sa,pler number
+    this.wetDryEncoder.shift = function(channel, control, value, status, group) {
+        // Use value to determine direction works in rev
+        var direction = (value === 127) ? 1 : (value === 1 ? -1 : 0);
+        if (direction === 0) return;
+
+        MC2000.debugLog("FX Unit " + self.unitNumber + " Focus " + self.focus + " Wet/Dry encoder shift: " + direction);
+        var samplers = MC2000.samplers;
+        var focusIdx = self.focus; // FxUnit's focus variable (1-8)
+        var sampler = samplers[focusIdx];
+        MC2000.debugLog("Adjusting volume for sampler " + focusIdx);
+        if (!sampler) return;
+        var group = sampler.group;
+        var currentVol = engine.getValue(group, "volume");
+        var newVol = Math.max(0, Math.min(1, currentVol + (direction * -0.05)));
+        MC2000.debugLog("Current volume: " + currentVol + ", new volume: " + newVol);
+        engine.setValue(group, "volume", newVol);
+        MC2000.debugLog("New volume for sampler " + focusIdx + ": " + engine.getValue(group, "volume"));
+        if (MC2000.debugMode) MC2000.debugLog("Set volume for " + group + " to " + newVol);
+    };
+
+    /**
+     * Apply shift state to FX unit: sets wetDryEncoder input method.
+     * @param {boolean} shifted - true if shift is active
+     */
+    this.applyShiftState = function(shifted) {
+        if (this.wetDryEncoder) {
+            this.wetDryEncoder.input = shifted ? this.wetDryEncoder.shift : this.wetDryEncoder.input;
         }
     };
 };
@@ -586,6 +647,17 @@ MC2000.buildFxUnits = function() {
                 toggle.connect();
             }
         }
+    }
+
+    // Assign fxUnit to each deck's beatTapBtn using channel group
+    if (MC2000.decks) {
+        Object.keys(MC2000.decks).forEach(function(group) {
+            var deck = MC2000.decks[group];
+            if (deck && deck.beatTapBtn) {
+                deck.beatTapBtn.fxUnit = (deck.deckNumber === 1) ? MC2000.fxUnits[1] : MC2000.fxUnits[2];
+            }
+            MC2000.debugLog("Assigned FX unit to deck " + deck.deckNumber + " beatTapBtn" + (deck.beatTapBtn ? " (assigned)" : " (no beatTapBtn)")); 
+        });
     }
     
     if (MC2000.debugMode) MC2000.debugLog("FX units built with LED connections");
@@ -655,7 +727,10 @@ MC2000.buildLibraryControls = function() {
 MC2000.SamplerDeck = function(samplerNumber) {
     this.group = "[Sampler" + samplerNumber + "]";
     this.samplerNumber = samplerNumber;
-    this.deckNumber = samplerNumber <= 4 ? 1 : 2; // Deck 1 for samplers 1-4, Deck 2 for 5-8
+    // Deck 1 for samplers 1-4, Deck 2 for samplers 5-8
+    this.deckNumber = samplerNumber <= 4 ? 1 : 2;
+
+    // Consistent reference to instance
     var self = this;
     
     // Play button - use push type for proper sampler behavior
@@ -667,16 +742,15 @@ MC2000.SamplerDeck = function(samplerNumber) {
     // Custom input: play from start if stopped, stop if playing
     this.playButton.input = function(channel, control, value, status, group) {
         if (!MC2000.isButtonOn(value)) return; // Only act on press
-        
         var isPlaying = engine.getValue(group, "play");
         if (isPlaying) {
-            // If playing, stop it
             engine.setValue(group, "play", 0);
         } else {
-            // If stopped, play from cue point (start)
             engine.setValue(group, "cue_gotoandplay", 1);
         }
     };
+
+    
     
     this.playButton.output = function(value) {
         var ledName = "sampler" + self.samplerNumber;
@@ -762,7 +836,7 @@ MC2000.Deck = function(group) {
     });
     this.sync.longPressTimer = 0;
     this.sync.longPressThreshold = 1000; // 1 second in milliseconds
-    this.sync.input = function(channel, control, value, status, group) {
+     this.sync.input = function(channel, control, value, status, group) {
         if (MC2000.isButtonOn(value)) {
             // Button pressed
             if (MC2000.isShiftActive()) {
@@ -794,10 +868,12 @@ MC2000.Deck = function(group) {
             }
         }
     };
+   
     this.sync.output = function(value) {
         MC2000.LedManager.reflect("sync", value, {deck: self.deckNumber});
-        //MC2000.setLed(self.deckNumber, MC2000.leds.sync, value ? 1 : 0);
+       
     };
+    
     this.sync.connect = function() {
         engine.makeConnection(this.group, "sync_enabled", this.output.bind(this));
     };
@@ -974,6 +1050,52 @@ MC2000.Deck = function(group) {
     };
     this.pitchBendDownBtn.unshift();
 
+    // Beat Tap (tempo tap) button now belongs to the channel (deck) group
+    //var channelGroup = (samplerNumber <= 4) ? "[Channel1]" : "[Channel2]";
+    this.beatTapBtn = new components.Button({
+        group: group,
+        type: components.Button.prototype.types.push,     
+    });
+
+    // Assign persistent fxUnit property to beatTapBtn
+    this.beatTapBtn.fxUnit = undefined; // to be set after FX units are built
+
+
+    // Refactored beatTapBtn.input to use script.bpm.tapButton(deck)
+    this.beatTapBtn.input = function(channel, control, value, status, group) {
+        if (!MC2000.isButtonOn(value)) return;
+        if (MC2000.isShiftActive() && typeof this.shift === 'function') {
+            this.shift();
+        } else {
+            MC2000.debugLog("Beat Tap button pressed on deck " + self.deckNumber);
+            // Use deckNumber from this SamplerDeck instance
+            console.log("TappButton type: " + typeof bpm.tapButton);
+            if (typeof script !== 'undefined' && bpm.tapButton && typeof bpm.tapButton === 'function') {
+                bpm.tapButton(self.deckNumber);
+            } else {
+                // Fallback to Mixxx engine bpm_tap
+                engine.setValue(group, 'bpm_tap', 1);
+                if (MC2000.debugMode) {
+                    MC2000.debugLog('Fallback: engine.setValue("' + group + '", "bpm_tap", 1)');
+                }
+            }
+        }
+        
+    };
+
+    // beatTapBtn shift method to call fxunit increment sampler focus defined in fx unit   
+    this.beatTapBtn.shift = function() {
+       
+        MC2000.debugLog("Beat Tap button shift pressed: changing sampler focus for deck " + self.deckNumber);
+        var fxUnit = self.beatTapBtn.fxUnit;
+        if (fxUnit && typeof fxUnit.incrementFocus === 'function') {
+            fxUnit.incrementFocus(self.deckNumber);
+        }
+        if (MC2000.debugMode) MC2000.debugLog("Sampler focus set to " + (fxUnit ? fxUnit.focus : 'N/A'));
+    };
+
+        
+
     this.applyShiftState = function(shifted) {
         // List of all shift-capable components
         var shiftComponents = [
@@ -988,20 +1110,24 @@ MC2000.Deck = function(group) {
             this.loopHalveBtn,
             this.loopDoubleBtn,
             this.reloopExitBtn,
-            this.beatTapBtn
-        ];
         
+            
+        ];
         // Apply shift/unshift to individual components
         shiftComponents.forEach(function(comp) {
             if (comp) {
-                if (shifted && comp.shift) {
-                    comp.shift();
-                } else if (comp.unshift) {
-                    comp.unshift();
+                if (comp === self.fxWetDryEncoder) {
+                    // Set input method based on shift state
+                    comp.input = shifted ? comp.shiftedInput : comp.normalInput;
+                } else {
+                    if (shifted && comp.shift) {
+                        comp.shift();
+                    } else if (comp.unshift) {
+                        comp.unshift();
+                    }
                 }
             }
         });
-        
         // Apply shift/unshift to hotcue buttons
         if (this.hotcueButtons) {
             this.hotcueButtons.forEach(function(btn) {
@@ -1023,6 +1149,8 @@ MC2000.Deck = function(group) {
         group: group,
         type: components.Button.prototype.types.push,
     });
+
+    
     this.loopInBtn.normalInput = function(_ch,_ctrl,value,_status,group){
         if (!MC2000.isButtonOn(value)) return;
         // Normal: Set loop in point, or activate beatloop if no loop
@@ -1235,12 +1363,7 @@ MC2000.Deck = function(group) {
         this.hotcueButtons[n - 1].input(0, control, value, 0, group);
     };
 
-    // Beat Tap (tempo tap) button
-    this.beatTapBtn = new components.Button({
-        group: group,
-        inKey: "bpm_tap",
-        type: components.Button.prototype.types.push,
-    });
+    
 };
 
 MC2000.buildComponents = function() {
@@ -1290,7 +1413,7 @@ MC2000.playButton = function(channel, control, value, status, group) {
 };
 
 MC2000.cueButton = function(channel, control, value, status, group) {
-    MC2000.decks[group].applyShiftState(MC2000.isShiftActive());
+    //MC2000.decks[group].applyShiftState(MC2000.isShiftActive());
     if (MC2000.debugMode) {
         MC2000.debugLog(
             "cueButton: value=" + value +
@@ -1303,7 +1426,7 @@ MC2000.cueButton = function(channel, control, value, status, group) {
 };
 
 MC2000.syncButton = function(channel, control, value, status, group) {
-    MC2000.decks[group].applyShiftState(MC2000.isShiftActive());
+    //MC2000.decks[group].applyShiftState(MC2000.isShiftActive());
     MC2000.decks[group].sync.input(channel, control, value, status, group);
 };
 
