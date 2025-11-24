@@ -10,14 +10,13 @@
     <name>Denon MC2000 (User Defined)</name>
     <author>Graham Thomas</author>
     <description>Complete Denon MC2000 mapping with transport controls, jog wheels, hotcues, loops, effects, samplers, and LED feedback. Features full button press/release detection via Note On/Off events, shift lock functionality, and Components-based architecture.</description>
-    <manualPage></manualPage>
+    <manualPage>https://github.com/gThomas99/MIXXX_Denon_MC-2000_Controller</manualPage>
     <forumlink>https://mixxx.discourse.group/c/controller-mappings/10</forumlink>
     <wikilink></wikilink>
   </info>
   <controller id="DENON-MC2000" protocol="MIDI">
     <scriptfiles>
       <!-- Components framework (ensure this file exists in the same folder or Mixxx controllers folder) -->
-      <include filename="common-controller-scripts.js"/>
       <file filename="lodash.mixxx.js" />
       <file filename="midi-components-0.0.js"/>
       <file filename="Denon-MC2000-scripts.js" functionprefix="MC2000"/>
@@ -949,6 +948,22 @@
         <key>MC2000.ScrollVertical</key>
         <status>0xB0</status>
         <midino>0x54</midino>
+        <options><Script-Binding/></options>
+      </control>
+
+    <!-- preview deck 1 track -->
+      <control>
+         <group>[PreviewDeck1]</group>
+        <key>MC2000.libraryPreviewButton</key>
+        <status>0x90</status>
+        <midino>0x64</midino>
+        <options><Script-Binding/></options>
+      </control>
+      <control>
+        <group>[PreviewDeck1]</group>
+        <key>MC2000.libraryPreviewButton</key>
+        <status>0x80</status>
+        <midino>0x64</midino>
         <options><Script-Binding/></options>
       </control>
 

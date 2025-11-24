@@ -1,12 +1,11 @@
 /**
  * Denon MC2000 Mixxx Controller Mapping
  * Author: Graham Thomas
- * Version: 0.1.0-alpha (Initial Implementation)
+ * Version: 0.1.0-pre-beta (Smoke Tested)
  * Date: November 2025
  *
  * IMPLEMENTATION STATUS:
- * This is an initial implementation with most features coded but untested.
- * Many functions may be buggy and require refinement.
+ * Pre-beta: Most features implemented and smoke tested. Some functions may require further refinement and full beta testing.
  *
  * IMPLEMENTED FEATURES:
  * - Transport controls (play, cue, sync, keylock) with Components-based architecture
@@ -19,21 +18,21 @@
  * - Library navigation (focus forward/backward, vertical scroll encoder)
  * - Load track to deck buttons
  * - Pitch bend/jog wheel scaffolding
- * - LED feedback system using custom MC2000.setLed() protocol
+ * - LED feedback system using custom MC2000.Led api with caching, see note below
  * - Shift layer support for transport and hotcue buttons
  * - Debug logging system (toggle via MC2000.debugMode flag)
+ * - Preview deck and sampler deck support
+ * - Handler wrappers for XML mapping, this is a thin wrapper layer that calls into the Components-based architecture
+
  *
  * KNOWN ISSUES:
- * - MIDI note/CC codes need verification against hardware
- * - LED feedback may not work correctly for all controls
- * - Jog wheel/scratch functionality incomplete
- * - Some encoder sensitivities may need tuning
- * - Shift layer behaviors need testing
+ * - Sure there are plenty
  *
  * REFERENCES:
  * - Denon MC3000/MC4000/MC6000MK2 scripts in Mixxx source
  * - Mixxx Components JS library (midi-components-0.0.js)
  * - Custom LED protocol specific to MC2000 hardware
+ * - Rotary Encoder Jogwheel Mixxx (jogTouch): https://github.com/gold-alex/Rotary-Encoder-Jogwheel-Mixxx
  *
  * USAGE:
  * 1. Ensure MIDI codes in Denon-MC2000.midi.xml match your hardware
@@ -155,6 +154,25 @@ MC2000.LedManager = (function() {
     }
 
     return {
+        /**
+         * Blink an LED for a given period/cycles, then restore its original state from cache.
+         * Arguments are the same as blink: name, period, cycles, opts, callback.
+         */
+        blinkAndRestore: function(name, period, cycles, opts, callback) {
+            var decks = (opts && opts.deck) ? [opts.deck] : this._LED_MAP[name].decks;
+            var cache = this._dumpCache();
+            var ledCode = MC2000.leds[name];
+            decks.forEach(function(deckNum) {
+                var cacheKey = deckNum + '|' + ledCode;
+                var originalState = cache[cacheKey];
+                if (typeof originalState === 'undefined') originalState = MC2000.LED_STATE.OFF;
+                MC2000.LedManager.blink(name, period, cycles, {deck: deckNum}, function() {
+                    MC2000.LedManager.setRaw(name, originalState, {deck: deckNum});
+                    MC2000.debugLog("LED " + name + " blinked, restored to state: " + originalState);
+                    if (typeof callback === 'function') callback();
+                });
+            });
+        },
         set: function(name, status, opts) {
             var def = LED_MAP[name];
             if (!def) return;
@@ -212,7 +230,7 @@ MC2000.LedManager = (function() {
         reflect: function(name, value, opts) {
             this.set(name, value ? 'on' : 'off', opts);
         },
-        blink: function(name, period, cycles, opts) {
+        blink: function(name, period, cycles, opts, callback) {
             period = period || 500;
             cycles = cycles || 6; // total state flips
             var on = true;
@@ -224,6 +242,7 @@ MC2000.LedManager = (function() {
                 fired++;
                 if (fired >= cycles) {
                     engine.stopTimer(timerId);
+                    if (typeof callback === 'function') callback();
                 }
             });
         },
@@ -275,7 +294,6 @@ MC2000.jogScrubScaling = 0.0001;     // extremely fine scrubbing
 MC2000.jogPitchScale   = 1.0/4;      // scale for non-scratch jog (pitch bend)
 // MIDI center value for relative encoder
 MC2000.jogCenter       = 0x40;       // relative center value
-MC2000.numHotcues      = 8;
 
 //////////////////////////////
 // Internal state           //
@@ -296,6 +314,9 @@ MC2000.jogScratchActive = [false, false, false];
 MC2000.jogReleaseTimer  = [null, null, null];
 MC2000.jogLastTickTime  = [0, 0, 0];
 MC2000.jogTickCount     = [0, 0, 0];
+
+// Number of hotcues
+MC2000.numHotcues      = 8;
 
 //////////////////////////////
 // Utility helpers          //
@@ -365,6 +386,11 @@ MC2000.setDefaultMixerLevels = function() {
     if (MC2000.debugMode) MC2000.debugLog("Default mixer levels set");
 };
 
+
+
+
+
+
 //////////////////////////////
 // Initialization           //
 //////////////////////////////
@@ -416,6 +442,7 @@ MC2000.init = function(id) {
 
     // Build sampler decks
     MC2000.buildSamplerDecks();
+    MC2000.buildPreviewDeck();
 
 
     // Set default mixer levels (safe startup values)
@@ -511,8 +538,8 @@ MC2000.FxUnit = function(unitNumber) {
     this.unitNumber = unitNumber;
     this.effects = [];
     //focus is used by wetDry encoder shift method to determine which deck's sampler to adjust
-    // Set focus for FX unit: 1 for unit 1, 5 for unit 2
-    this.focus = (unitNumber === 1) ? 1 : 5;
+    // Set focus for FX unit: odd decks start at 1, even decks start at 5
+    this.focus = (unitNumber % 2 === 1) ? 1 : 5;
     //this.focus = 1;
  
     var self = this;
@@ -523,29 +550,27 @@ MC2000.FxUnit = function(unitNumber) {
      * //deck number should match this.unitNumber
      */
     this.incrementFocus = function(deckNumber) {
-        MC2000.debugLog("FX Unit " + self.unitNumber + " Incrementing focus from " + this.focus);
-        if (deckNumber === 1) {
-            // Cycle through samplers 1-4
+        MC2000.debugLog("FX Unit " + self.unitNumber + " Incrementing focus from " + this.focus + " on deck " + deckNumber);
+        if (deckNumber % 2 === 1) {
+            // Odd deck: cycle through samplers 1-4
+            MC2000.debugLog("Deck1 focus increment");
             this.focus = (this.focus % 4) + 1;
         } else {
-            // Cycle through samplers 5-8
-            this.focus = ((this.focus - 4) % 4) + 5;
+            MC2000.debugLog("Deck2 focus increment");
+            // Even deck: cycle through samplers 5-8
+            var adjustedFocus = this.focus - 4;
+            this.focus = (adjustedFocus % 4) + 5;
         }
         // Blink sampler button LED for 750 ms, then restore original state
+        // LED will only light if Sample Mode on controller is on, otherwise pads are used for Hotcues
         MC2000.debugLog("FX Unit " + self.unitNumber + " New focus is " + this.focus);
         var ledName = "sampler" + this.focus;
-        // Get original LED state from cache
-        var cache = MC2000.LedManager._dumpCache();
-        var ledCode = MC2000.leds[ledName];
-        var cacheKey = deckNumber + '|' + ledCode;
-        var originalState = cache[cacheKey];
-        if (typeof originalState === 'undefined') originalState = MC2000.LED_STATE.OFF;
-        MC2000.debugLog("FX Unit " + self.unitNumber + " Blinking LED: " + ledName + " (original state: " + originalState + ")");
-        MC2000.LedManager.set(ledName, 'on', {deck: deckNumber});
-        engine.beginTimer(750, function() {
-            MC2000.LedManager.setRaw(ledName, originalState, {deck: deckNumber});
-            MC2000.debugLog("FX Unit " + self.unitNumber + " Restored LED: " + ledName + " to state: " + originalState);
-        }, true);
+        
+        MC2000.debugLog("FX Unit " + self.unitNumber + " Blinking LED: " + ledName );
+        //wow blink allows callbacks so this should be non blocking code
+        MC2000.LedManager.blinkAndRestore(ledName, 250, 4, {deck: deckNumber}, function() {
+            MC2000.debugLog("FX Unit " + self.unitNumber + " Restored LED: " + ledName);
+        });
     };
 
     
@@ -614,12 +639,12 @@ MC2000.FxUnit = function(unitNumber) {
         MC2000.debugLog("Adjusting volume for sampler " + focusIdx);
         if (!sampler) return;
         var group = sampler.group;
-        var currentVol = engine.getValue(group, "volume");
-        var newVol = Math.max(0, Math.min(1, currentVol + (direction * -0.05)));
-        MC2000.debugLog("Current volume: " + currentVol + ", new volume: " + newVol);
-        engine.setValue(group, "volume", newVol);
-        MC2000.debugLog("New volume for sampler " + focusIdx + ": " + engine.getValue(group, "volume"));
-        if (MC2000.debugMode) MC2000.debugLog("Set volume for " + group + " to " + newVol);
+        var currentGain = engine.getValue(group, "pregain");
+        var newGain = Math.max(0, Math.min(4, currentGain + (direction * 0.05)));
+        MC2000.debugLog("Current pregain: " + currentGain + ", new pregain: " + newGain);
+        engine.setValue(group, "pregain", newGain);
+        MC2000.debugLog("New pregain for sampler " + focusIdx + ": " + engine.getValue(group, "pregain"));
+        if (MC2000.debugMode) MC2000.debugLog("Set pregain for " + group + " to " + newGain);
     };
     // Assign input methods
     this.wetDryEncoder.shift = this.wetDryEncoder.shiftInput;  
@@ -721,7 +746,12 @@ MC2000.buildLibraryControls = function() {
         engine.setValue("[Library]", "GoToItem", 1);
         if (MC2000.debugMode) MC2000.debugLog("Library: GoToItem triggered");
     };
+    
+               
 };
+    
+   
+
 
 //////////////////////////////
 // Sampler Decks            //
@@ -781,6 +811,36 @@ MC2000.buildSamplerDecks = function() {
 };
 
 //////////////////////////////
+// Preview Deck Group       //
+//////////////////////////////
+MC2000.PreviewDeck = function() {
+    this.group = "[PreviewDeck1]";
+    // Play button for preview deck
+    this.playButton = new components.Button({
+        group: this.group,
+        inKey: "play",
+        type: components.Button.prototype.types.toggle,
+    });
+    this.playButton.output = function(value) {
+        // No LED, but could log or trigger feedback
+        if (MC2000.debugMode) MC2000.debugLog("PreviewDeck play: " + value);
+    };
+    //there is no led for preview deck but keep the connect method for consistency
+    this.playButton.connect = function() {
+        engine.makeConnection(this.group, "play", this.output.bind(this));
+    };
+};
+
+MC2000.buildPreviewDeck = function() {
+    MC2000.previewDeck = new MC2000.PreviewDeck();
+    if (MC2000.previewDeck.playButton && MC2000.previewDeck.playButton.connect) {
+        MC2000.previewDeck.playButton.connect();
+    }
+    if (MC2000.debugMode) MC2000.debugLog("Preview deck built");
+};
+
+
+//////////////////////////////
 // Components wiring   Deck Controls      //
 //////////////////////////////
 MC2000.Deck = function(group) {
@@ -838,7 +898,8 @@ MC2000.Deck = function(group) {
     });
     this.sync.longPressTimer = 0;
     this.sync.longPressThreshold = 1000; // 1 second in milliseconds
-     this.sync.input = function(channel, control, value, status, group) {
+    var deckSelf = self; // Capture parent Deck context
+    this.sync.input = function(channel, control, value, status, group) {
         if (MC2000.isButtonOn(value)) {
             // Button pressed
             if (MC2000.isShiftActive()) {
@@ -852,11 +913,11 @@ MC2000.Deck = function(group) {
                     engine.setValue(group, "sync_enabled", 0);
                 } else {
                     // Sync lock is off: start timer for long press detection
-                    var self = this;
+                    var btnSelf = this;
                     this.longPressTimer = engine.beginTimer(this.longPressThreshold, function() {
                         // Long press: enable sync lock
                         engine.setValue(group, "sync_enabled", 1);
-                        self.longPressTimer = 0;
+                        btnSelf.longPressTimer = 0;
                     }, true); // one-shot timer
                 }
             }
@@ -867,9 +928,13 @@ MC2000.Deck = function(group) {
                 engine.stopTimer(this.longPressTimer);
                 this.longPressTimer = 0;
                 engine.setValue(group, "beatsync", 1);
+
+                // Blink sync LED for 1000ms to show one-shot beatsync
+                MC2000.LedManager.blinkAndRestore("sync", 1000, 4, {deck: deckSelf.deckNumber});
             }
         }
     };
+
    
     this.sync.output = function(value) {
         MC2000.LedManager.reflect("sync", value, {deck: self.deckNumber});
@@ -1823,6 +1888,16 @@ MC2000.libraryGoToItemBtn = function(channel, control, value, status, group) {
     }
     MC2000.libraryGoToItemComp.input(channel, control, value, status, group);
 };
+
+// Thin wrapper for XML mapping
+MC2000.libraryPreviewButton = function(channel, control, value, status, group) {
+    
+    MC2000.previewDeck.playButton.input(channel, control, value, status, group);
+    
+};
+
+
+
 
 //////////////////////////////
 // Sampler handlers         //
