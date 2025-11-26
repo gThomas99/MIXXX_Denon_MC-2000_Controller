@@ -121,6 +121,7 @@ MC2000.LedManager = (function() {
 
     // Build a table mapping LED symbolic names to their code and deck affinity.
     var LED_MAP = {};
+    var allLedsMap = {};
     Object.keys(MC2000.leds).forEach(function(name) {
         var code = MC2000.leds[name];
         var decks;
@@ -138,6 +139,7 @@ MC2000.LedManager = (function() {
             decks = [1, 2];
         }
         LED_MAP[name] = { code: code, decks: decks };
+        allLedsMap[name] = 'on';
     });
 
     function normalize(status) {
@@ -154,6 +156,11 @@ MC2000.LedManager = (function() {
     }
 
     return {
+        /**
+         * allLedsMap: Object mapping all LED names to 'on' (default state for bulk operations).
+         * Can be used externally to turn all LEDs on or off via bulk().
+         */
+        allLedsMap: allLedsMap,
         /**
          * Blink an LED for a given period/cycles, then restore its original state from cache.
          * Arguments are the same as blink: name, period, cycles, opts, callback.
@@ -421,12 +428,7 @@ MC2000.init = function(id) {
     }
     
     // Brief LED flash to confirm init started - turn all LEDs on
-    var allLedsMap = {};
-    Object.keys(MC2000.leds).forEach(function(name) {
-        allLedsMap[name] = 'on';
-    });
-
-    MC2000.LedManager.bulk(allLedsMap);
+    MC2000.LedManager.bulk(MC2000.LedManager.allLedsMap);
         
     // Build Components-based structure with LED connections
     MC2000.buildComponents();
@@ -446,8 +448,8 @@ MC2000.init = function(id) {
 
 
     // Set default mixer levels (safe startup values)
-    //anoying if volume controls have not been moved afetr last MIXXX run
-    //MC2000.setDefaultMixerLevels();
+
+    MC2000.setDefaultMixerLevels();
     
     // After 1 second delay, reset all LEDs to defaults and enable PFL on deck 1
    

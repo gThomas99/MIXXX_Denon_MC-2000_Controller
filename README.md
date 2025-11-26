@@ -28,6 +28,7 @@ Only `Denon-MC2000.midi.xml`, `Denon-MC2000-scripts.js` are required by MIXXX, t
 - mixx-debaug.bat is a Windows batch file for starting MIXXX in debug mode. This will display the debug messages embedded in the script as well as midi signals and MIXXX messages
 - Denon-MC2000-MIDI-mapping.csv summaries all the midi code mappings. The first two columns link to pages 17 to 19 in Denon Manual explaining the intended function of each button
 - Denon-MC2000-README.md is AI generated documentation detailing the project status
+- util/create-m3u.ps1 creates m3u play list from a directory structure: reads first level directories and then creates playlist from all music file, search is recursive. (Windows Powershell script)
 
 
 ## 🏁 Installation <a name = "Installation"></a>
@@ -76,13 +77,14 @@ Place the following files in your Mixxx controllers directory:
 - Ensure the controller is enabled (checkbox checked).
 - If needed, assign the mapping manually by selecting the correct XML file.
 
-On startup all the lights on controller are turned on for a second to show successful initialization. If the required libraries are missing the 'VINYL MODE' lights will blink and then turn off: this is a fatal error and controller will not operate.
 
 ---
 
 ## 🏁 Usage <a name = "Usage"></a>
 
-Summary of implemented controls.
+Summary of implemented controls. Denon-MC2000-MIDI-mappings.csv is a table showing all the command implemented and their midi-mapping.
+
+On startup all the lights on controller are turned on for a second to show successful initialization. If the required libraries are missing the 'VINYL MODE' lights will blink and then turn off: this is a fatal error and controller will not operate. Volumes and other pots are set to safe levels, move any slider or knob to get MIXXX to register the actual level on the controller.
 
 ## Deck Controls
 
@@ -160,8 +162,9 @@ Sample pre-gain is managed by shift functions  of BEATS button/encoder.  The con
 ---
 ## :alarm_clock: Todos <a name = "todos"></a>
 
-Test functions
-Clean up debug output.
+- Test functions
+- Test on Linux (I do not have a Mac)
+- Clean up debug output.
 
 ---
 
@@ -175,7 +178,7 @@ MIXXX provides three general patterns for coding controllers.
 - **User Defined JavaScript functions**: Controls are mapped to a function in a user defined Javascript file: a javascrip object is defined in the file which acts the namespace for the controller and functions are added as required to handle various midi codes. The javascript file and object name space are set in midi mapping xml file
 - **ComponentsJS**:  JavaScript on steriods. ComponentsJS is library of objects used in the JavaScript file described above that abstracts the controller components into buttons, pots, encoders and other object classes. The component object are placed in groups objects to create a deck, FX unit and other logical units. 
 
-A controller can use any combination of the patterns described above. JogWheel are problematic as there is no simple direct mapping type due to the different types of hardware and require a script to work.
+A controller can use any combination of the patterns described above. JogWheel are problematic as there is no simple direct mapping type due to the different types of hardware and requires a script to work.
 
 The Denon MC2000 controller also has a number of idiosyncrasies that make it difficult to code and resulted in the extensive use of component objects
 
@@ -185,8 +188,10 @@ The Denon MC2000 controller also has a number of idiosyncrasies that make it dif
 
 - Some midi codes do not follow an expected pattern. The main example is the Sample buttons which have a non-sequential order making it difficult to use standard array logic. This was resolved by creating wrapper function to a component call: The midi mapping calls a standard javaScript function that then works out the component method to call.
 
-It took me two attempts to write this controller. On the first attempt I was struggling to understand the different coding patterns and the peculiarities of Denon MC2000: it was just a mess. On the second attempt I used ai coding tools, prompting  'write a mixxx controller for Denon MC2000' (ok it was a little bit more specific) resulted in a workable skeleton and rapid development of the rest of the controller. One result of this approach was the use of wrapper functions, the initial skeletons lifted code from other Denon controller and the ai was then coaxed to use the components library. Although the wrapper functions are open to debate my conclusion is 'if it ain't broke don't fix it'.
+It took me two attempts to write this controller. On the first attempt I was struggling to understand the different coding patterns and the peculiarities of Denon MC2000: it was just a mess. On the second attempt I used ai coding tools, prompting  'write a mixxx controller for Denon MC2000' (ok it was a little bit more specific) resulted in a workable skeleton and rapid development of the rest of the controller. One result of this approach was the use of wrapper functions, the initial skeletons lifted code from other Denon controller and the ai was then coaxed to use the components library. Although the use of wrapper handler functions are is open to debate my conclusion is 'if it ain't broke don't fix it'.
 
+- [MIXXX mapping Controls](https://manual.mixxx.org/2.5/en/chapters/appendix/mixxx_controls)
+- [MIXXX Midi scripting wiki](https://github.com/mixxxdj/mixxx/wiki/Midi-Scripting)
 - [Components.js](https://github.com/mixxxdj/mixxx/wiki/Components-JS) - Midi object abstraction layer
 - [JogWHeel Script]( https://github.com/gold-alex/)
 
