@@ -1,7 +1,7 @@
 /**
  * Denon MC2000 Mixxx Controller Mapping
  * Author: Graham Thomas
- * Version: 0.1.0-pre-beta (Smoke Tested)
+ * Version: 0.1.1-pre-beta (Smoke Tested)
  * Date: November 2025
  *
  * IMPLEMENTATION STATUS:
@@ -41,6 +41,15 @@
  * 4. Check console output for "[MC2000-DEBUG]" messages
  */
 
+// --- Controller Build Config ---
+var MC2000Config = {
+    useAltPitchBend: true, // If true, use alt pitchbend buttons with jump 32 behavior
+    // Add more options as needed
+    // e.g., enableFxUnits: false,
+    // customLedStartup: true,
+};
+
+//The actual MC2000 namespace object
 var MC2000 = {};
 
 // MIDI Reception commands (from spec)
@@ -446,7 +455,15 @@ MC2000.init = function(id) {
     MC2000.buildSamplerDecks();
     MC2000.buildPreviewDeck();
 
-
+    //Decks etc are built with default values then MC2000Config is processed for different build options
+    //Decks need to be built before making chages
+    // Apply alternate pitch bend button behavior if configured
+    if (MC2000Config.useAltPitchBend) {
+        MC2000.decks["[Channel1]"].pitchBendUpBtn.swapShiftFunction();
+        MC2000.decks["[Channel1]"].pitchBendDownBtn.swapShiftFunction();
+        MC2000.decks["[Channel2]"].pitchBendUpBtn.swapShiftFunction();
+        MC2000.decks["[Channel2]"].pitchBendDownBtn.swapShiftFunction();
+    }
     // Set default mixer levels (safe startup values)
 
     MC2000.setDefaultMixerLevels();
@@ -569,7 +586,7 @@ MC2000.FxUnit = function(unitNumber) {
         var ledName = "sampler" + this.focus;
         
         MC2000.debugLog("FX Unit " + self.unitNumber + " Blinking LED: " + ledName );
-        //wow blink allows callbacks so this should be non blocking code
+        //wow blink allows callbacks so this should be non-blocking code
         MC2000.LedManager.blinkAndRestore(ledName, 250, 4, {deck: deckNumber}, function() {
             MC2000.debugLog("FX Unit " + self.unitNumber + " Restored LED: " + ledName);
         });
@@ -696,7 +713,7 @@ MC2000.buildFxUnits = function() {
 // Library Controls         //
 //////////////////////////////
 MC2000.buildLibraryControls = function() {
-    // Note: MoveFocusForward/Backward use direct <Button/> mapping in XML
+    // All Library functions handled as components
     // Only need encoder component for vertical scrolling
     
     // Vertical scroll encoder (browse up/down in library)
@@ -864,6 +881,19 @@ MC2000.Deck = function(group) {
     this.play.connect = function() {
         engine.makeConnection(this.group, "play_indicator", this.output.bind(this));
     };
+    // Store the original input method
+    this.play.originalInput = this.play.input;
+    this.play.unshift = function() {
+        this.input = this.originalInput;
+    };
+    this.play.shift = function() {
+        // Shift: cue_gotoandplay
+        this.input = function(_ch, _ctrl, value, _status, group) {
+            if (!MC2000.isButtonOn(value)) return;
+            engine.setValue(group, "cue_gotoandplay", 1);
+        };
+    };
+    this.play.unshift();
 
     // Cue: cue type button; Shift: gotoandplay
     this.cue = new components.Button({
@@ -890,7 +920,7 @@ MC2000.Deck = function(group) {
         // Override with gotoandplay behavior
         this.input = function(_ch,_ctrl,value,_status,group){
             if (!MC2000.isButtonOn(value)) return;
-            engine.setValue(group, "cue_gotoandplay", 1);
+            engine.setValue(group, "playposition", 0.0);
         };
     };
 
@@ -1084,40 +1114,62 @@ MC2000.Deck = function(group) {
         type: components.Button.prototype.types.push,
     });
     this.pitchBendUpBtn.normalInput = function(_ch,_ctrl,value,_status,group){
-        // Normal: temporary pitch bend up
         engine.setValue(group, "rate_temp_up", MC2000.isButtonOn(value) ? 1 : 0);
     };
     this.pitchBendUpBtn.shiftedInput = function(_ch,_ctrl,value,_status,group){
-        // Shift: fast forward
         engine.setValue(group, "fwd", MC2000.isButtonOn(value) ? 1 : 0);
     };
+    this.pitchBendUpBtn.altShiftInput = function(_ch, _ctrl, value, _status, group) {
+        if (!MC2000.isButtonOn(value)) return;
+        engine.setValue(group, "beatjump_32_forward", 1);
+    };
+    // Function pointer for shift behavior
+    this.pitchBendUpBtn.shiftFunction = this.pitchBendUpBtn.shiftedInput;
     this.pitchBendUpBtn.unshift = function() {
         this.input = this.normalInput;
     };
     this.pitchBendUpBtn.shift = function() {
-        this.input = this.shiftedInput;
+        this.input = this.shiftFunction;
     };
     this.pitchBendUpBtn.unshift();
 
+    // Pitch Bend Down Button
     this.pitchBendDownBtn = new components.Button({
         group: group,
         type: components.Button.prototype.types.push,
     });
     this.pitchBendDownBtn.normalInput = function(_ch,_ctrl,value,_status,group){
-        // Normal: temporary pitch bend down
         engine.setValue(group, "rate_temp_down", MC2000.isButtonOn(value) ? 1 : 0);
     };
     this.pitchBendDownBtn.shiftedInput = function(_ch,_ctrl,value,_status,group){
-        // Shift: fast rewind (back)
         engine.setValue(group, "back", MC2000.isButtonOn(value) ? 1 : 0);
     };
+    this.pitchBendDownBtn.altShiftInput = function(_ch, _ctrl, value, _status, group) {
+        if (!MC2000.isButtonOn(value)) return;
+        engine.setValue(group, "beatjump_32_backward", 1);
+    };
+    
+    // Function pointer for shift behavior
+    this.pitchBendDownBtn.shiftFunction = this.pitchBendDownBtn.shiftedInput;
     this.pitchBendDownBtn.unshift = function() {
         this.input = this.normalInput;
     };
     this.pitchBendDownBtn.shift = function() {
-        this.input = this.shiftedInput;
+        this.input = this.shiftFunction;
     };
     this.pitchBendDownBtn.unshift();
+
+    // Method to swap shiftFunction between shiftedInput and altShiftInput
+    this.pitchBendUpBtn.swapShiftFunction = function() {
+        this.shiftFunction = (this.shiftFunction === this.shiftedInput)
+            ? this.altShiftInput
+            : this.shiftedInput;
+    };
+    this.pitchBendDownBtn.swapShiftFunction = function() {
+        this.shiftFunction = (this.shiftFunction === this.shiftedInput)
+            ? this.altShiftInput
+            : this.shiftedInput;
+    };
 
     // Beat Tap (tempo tap) button now belongs to the channel (deck) group
     //var channelGroup = (samplerNumber <= 4) ? "[Channel1]" : "[Channel2]";
@@ -1168,6 +1220,7 @@ MC2000.Deck = function(group) {
     this.applyShiftState = function(shifted) {
         // List of all shift-capable components
         var shiftComponents = [
+            this.play,
             this.cue,
             this.sync,
             this.keylock,
@@ -1179,8 +1232,6 @@ MC2000.Deck = function(group) {
             this.loopHalveBtn,
             this.loopDoubleBtn,
             this.reloopExitBtn,
-        
-            
         ];
         // Apply shift/unshift to individual components
         shiftComponents.forEach(function(comp) {
@@ -1658,6 +1709,7 @@ MC2000.jogTouch = function(channel, control, value, status, group) {
         // -------------------------------------------------
         if (!MC2000.jogScratchActive[deckNum]) {
             // Enable slip mode when starting scratch - track continues in background
+           
             var slipEnabled = engine.getValue(group, "slip_enabled");
             if (!slipEnabled) {
                 engine.setValue(group, "slip_enabled", 1);

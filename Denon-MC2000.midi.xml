@@ -1,13 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Denon MC2000 preliminary Mixxx mapping (skeleton)
-  THIS IS A STARTER FILE. Fill in real MIDI status + midino values captured from your hardware.
+  Denon MC2000  Mixxx mapping preset
   schemaVersion="1" = legacy preset format used by existing bundled mappings.
   After editing, reload in Mixxx Preferences > Controllers.
 -->
 <MixxxControllerPreset schemaVersion="1" mixxxVersion="2.5.0">
   <info>
-    <name>Denon MC2000 (User Defined)</name>
+    <name>Denon MC2000 0.1.1 (User Defined)</name>
     <author>Graham Thomas</author>
     <description>Complete Denon MC2000 mapping with transport controls, jog wheels, hotcues, loops, effects, samplers, and LED feedback. Features full button press/release detection via Note On/Off events, shift lock functionality, and Components-based architecture.</description>
     <manualPage>https://github.com/gThomas99/MIXXX_Denon_MC-2000_Controller</manualPage>
@@ -314,7 +313,7 @@
         <options><Script-Binding/></options>
       </control>
       <!-- The Denon MC2000 controller will send different midi depending on Vinyl mode button -->
-      <!-- The controller does not need to work out if Vinyl button is on or off -->
+      <!-- The controller.js does not need to work out if Vinyl button is on or off -->
       <!-- Jog Wheels CDJ mode pitch bend-->
       <!-- Jog touch vinyl mode calls scratching engine deck 1 (CC message B0+channel) -->
       <control>
