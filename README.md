@@ -16,12 +16,12 @@
 
 # MIXXX DJ controller for Denon MC2000. 
 
-The Denon MC2000 was marketed as an entry level two deck controller for Serato DJ, the original package came with Serato DJ Lite. This project is a Midi mapping and script that allows the Denon MC2000 to be used with MIXXX open source DJ software: this will allow access to more professional features. The controller's features and layout are relatively conventional and basic, this mapping aims to follow the original Serato DJ Lite functions. In most cases you should be able to use the controller on MIXXX by following Denon MC2000 manual. 
+The Denon MC2000 was marketed as an entry level two deck controller for Serato DJ, the original package came with Serato DJ Intro (now DJ Lite). This project is a Midi mapping and script that allows the Denon MC2000 to be used with MIXXX open source DJ software: this will allow access to more professional features. The controller's features and layout are relatively conventional, this mapping aims to follow the original Serato DJ Intro functions. In most cases you should be able to use the controller on MIXXX by following Denon MC2000 manual. 
 
-The controller was released in 2012 but is no longer available new in UK. It has not received a lot of attention recently: the user created MIXXX mappings for this controller are old and I couldn't get a lot of commands to work as expected on newer versions of MIXXX. (MIXXX does not produce an official mapping for Denon MC2000)
+The controller was released in 2012 but is no longer available: Denon DJ was acquired by inMusic Brands in 2014 and Denon MC range was phased out. It has not received a lot of attention recently: the user created MIXXX mappings for this controller are old and I couldn't get a lot of commands to work as expected on newer versions of MIXXX. (MIXXX does not produce an official mapping for Denon MC2000). 
 
-This controller was developed near enough from scratch on MIXXX version 2.5 on a Windows platform. Extensive use is made of components.js framework with all mappings except jogWheel/JogTouch working through a component object: this was done more for consistency than efficiency. This does mean mapping is JavaScript heavy and rather verbose. The JogWheel script was lifted from  [Gold-Alex]( https://github.com/gold-alex/)
-Rotary-Encoder-Jogwheel-Mixxx: this seemed to offer better control compared to standard offering but is an area that can be improved. (I suspect a lot of people have problems understating how JogWheels are scripted in MIXXX). 
+This controller was developed near enough from scratch on MIXXX version 2.5.3 on a Windows platform. Extensive use is made of components.js framework with all mappings except jogWheel/JogTouch working through a component object: this was done more for consistency than efficiency. This does mean the mapping is JavaScript heavy and rather verbose. The JogWheel script was lifted from  [Gold-Alex]( https://github.com/gold-alex/)
+: this seemed to offer better control compared to standard offering but is an area that can be improved. (I suspect a lot of people have problems understating how JogWheels are scripted in MIXXX). 
 
 Only `Denon-MC2000.midi.xml`, `Denon-MC2000-scripts.js` are required by MIXXX, the other files are designed primarily for internal use.
 
@@ -84,16 +84,17 @@ Place the following files in your Mixxx controllers directory:
 
 Summary of implemented controls. Denon-MC2000-MIDI-mappings.csv is a table showing all the command implemented and their midi-mapping.
 
-On startup all the lights on controller are turned on for a second to show successful initialization. If the required libraries are missing the 'VINYL MODE' lights will blink and then turn off: this is a fatal error and controller will not operate. Volumes and other pots are set to safe levels, move any slider or knob to get MIXXX to register the actual level on the controller.
+On startup all the lights on controller are turned on for a second to show successful initialization. If the required libraries are missing the 'VINYL MODE' lights will blink and then turn off: this is a fatal error and controller will not operate. Volumes and other pots are set to safe levels, move any slider or knob to get MIXXX to register the actual level on the controller. Key Lock LED flash tio indicate pitch range.
 
 ## Deck Controls
 
 - **Play/Pause**: Standard transport controls for each deck.
 - **Cue**: Sets or returns to the cue point.
 - **Jog Wheel**: Scratches (VINYL mode) or nudges (CDJ mode) the track. Touch-sensitive for scratch mode.
-- **Pitch Fader**: Adjusts playback speed. <SHIFT> + <KEY LOCK> cycles through pitch ranges
+- **Pitch Fader**: Adjusts playback speed.
 - **Sync**: Matches BPM and phase to the opposite deck. Short press one-off sync, long press for sync lock
 - **Shift Layer**: Hold `Shift` to access secondary functions (e.g., alternate hotcues, sampler controls). <SHIFT> + pfl <CUE> to enable/disable shift lock
+- **Key Lock**: Enable harmonic matching. <SHIFT> cycle through pitch ranges: 5% 8% 16% 50%. Key lock LED flashes
 
 Moving pitch fader after a one-off Sync will return BPM to original value.
 
@@ -102,7 +103,7 @@ Moving pitch fader after a one-off Sync will return BPM to original value.
 - **Phones Knob**: Headphone volume
 - **Cue/Master Pan**: Headphone balance between headphone monitor and master output
 
-MIXXX Gui has Split button this will separate monitor and master channel, one side of the headphone will only play monitor and the other side master output
+MIXXX gui has Split button this will separate monitor and master channel, one side of the headphone will only play monitor and the other side master output
 
 ## Mixer Section
 
@@ -127,7 +128,7 @@ BEATS/SAMPLE VOL encoder knob is used for Dry/Wet mix, this function differs fro
 ## Samplers
 Samplers are miniature decks. They allow you to play short samples and jingles or additional tracks in your mix. The controller manages eight sample units split in to two deck groups.
 
-Denon MC2000 is an entry level deck and does not have dedicated sample controls: hotcue buttons double as sample and this is controlled by SAMPLE MODE button.
+Denon MC2000 does not have dedicated sample pads: hotcue buttons double as sample and this is controlled by SAMPLE MODE button.
 
 - **Sample/Hotcue Mode Button**: toggles between Hotcue and Sample. Light on in Sample mode
 - **Hotcue/Sample Button**: 4 x buttons per deck. Set/Play from hotcue, Play/Stop samples. <Shift> to clear Hotcue/Sample
@@ -178,7 +179,7 @@ MIXXX provides three general patterns for coding controllers.
 - **User Defined JavaScript functions**: Controls are mapped to a function in a user defined Javascript file: a javascrip object is defined in the file which acts the namespace for the controller and functions are added as required to handle various midi codes. The javascript file and object name space are set in midi mapping xml file
 - **ComponentsJS**:  JavaScript on steriods. ComponentsJS is library of objects used in the JavaScript file described above that abstracts the controller components into buttons, pots, encoders and other object classes. The component object are placed in groups objects to create a deck, FX unit and other logical units. 
 
-A controller can use any combination of the patterns described above. JogWheel are problematic as there is no simple direct mapping type due to the different types of hardware and requires a script to work.
+A controller can use any combination of the patterns described above. JogWheel are problematic as there is no simple direct mapping type due to the different types of hardware and requires a script to work, this is due to the different hardwrae types. Denon MC2000 uses a basic capacative encoder jogwheel with clockwise and anti-clockwise rotations detected around a center value of 0x40 
 
 The Denon MC2000 controller also has a number of idiosyncrasies that make it difficult to code and resulted in the extensive use of component objects
 

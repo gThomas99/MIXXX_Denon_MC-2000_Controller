@@ -43,7 +43,8 @@
 
 // --- Controller Build Config ---
 var MC2000Config = {
-    useAltPitchBend: true, // If true, use alt pitchbend buttons with jump 32 behavior
+    useAltPitchBend: true, // If true, use alt <SHIFT> pitchbend buttons with jump 32 behavior. False is fwd back and forward
+    setVolumeToSafeDefault: true, // If true, set mixer and master volumes to safe default levels on init
     // Add more options as needed
     // e.g., enableFxUnits: false,
     // customLedStartup: true,
@@ -289,9 +290,6 @@ MC2000.LedManager = (function() {
 })();
 
 
-
-
-
 //////////////////////////////
 // Tunable constants        //
 //////////////////////////////
@@ -314,6 +312,8 @@ MC2000.jogCenter       = 0x40;       // relative center value
 //////////////////////////////
 // Internal state           //
 //////////////////////////////
+// Global pitch ranges for keylock and pitch controls
+MC2000.pitchRanges = [0.05, 0.08, 0.16, 0.50];
 // Shift state: true if shift is currently held (button down)
 MC2000.shiftHeld = false;
 // Shift lock: true if shift lock is enabled (sticky shift)
@@ -458,21 +458,26 @@ MC2000.init = function(id) {
     //Decks etc are built with default values then MC2000Config is processed for different build options
     //Decks need to be built before making chages
     // Apply alternate pitch bend button behavior if configured
-    if (MC2000Config.useAltPitchBend) {
+    if (typeof MC2000Config.useAltPitchBend !== 'undefined' && typeof MC2000Config.useAltPitchBend === 'boolean' && MC2000Config.useAltPitchBend) {
         MC2000.decks["[Channel1]"].pitchBendUpBtn.swapShiftFunction();
         MC2000.decks["[Channel1]"].pitchBendDownBtn.swapShiftFunction();
         MC2000.decks["[Channel2]"].pitchBendUpBtn.swapShiftFunction();
         MC2000.decks["[Channel2]"].pitchBendDownBtn.swapShiftFunction();
     }
     // Set default mixer levels (safe startup values)
-
-    MC2000.setDefaultMixerLevels();
+    if (typeof MC2000Config.setVolumeToSafeDefault !== 'undefined' && typeof MC2000Config.setVolumeToSafeDefault === 'boolean' && MC2000Config.setVolumeToSafeDefault) {
+           MC2000.setDefaultMixerLevels();
+    }    
     
     // After 1 second delay, reset all LEDs to defaults and enable PFL on deck 1
    
     engine.beginTimer(1000, function() {
         MC2000.LedManager.resetDefaults();
         
+        //blink key led to show pitch range
+        MC2000.decks["[Channel1]"].keylock.blinkLed();
+        MC2000.decks["[Channel2]"].keylock.blinkLed();
+
         // Enable PFL/headphone cue on deck 1 after LED reset
         engine.setValue("[Channel1]", "pfl", 1);
         
@@ -982,6 +987,23 @@ MC2000.Deck = function(group) {
         group: group,
         type: components.Button.prototype.types.push,
     });
+    // Blink keylock LED helper to indicate pitch range 
+    this.keylock.blinkLed = function() {
+        var pitchRange = engine.getValue(this.group, "rateRange");
+        var ranges = MC2000.pitchRanges;
+
+        // Blink pattern map: index matches pitchRanges index (probably should be declared globally)
+        var blinkPatterns = [
+            {period: 800, cycles: 2}, // 5%
+            {period: 500, cycles: 3}, // 8%
+            {period: 350, cycles: 4}, // 16%
+            {period: 200, cycles: 6}  // 50%
+        ];
+        //pattern is based on pitch range index
+        var idx = ranges.indexOf(pitchRange);
+        var pattern = blinkPatterns[idx] || {period: 500, cycles: 2};
+        MC2000.LedManager.blinkAndRestore("keylock", pattern.period, pattern.cycles, {deck: self.deckNumber});
+    };
     this.keylock.normalInput = function(channel, control, value, status, group) {
         if (!MC2000.isButtonOn(value)) return;
         // Normal: toggle keylock on/off
@@ -990,14 +1012,16 @@ MC2000.Deck = function(group) {
     this.keylock.shiftedInput = function(channel, control, value, status, group) {
         if (!MC2000.isButtonOn(value)) return;
         // Shift: cycle pitch range (6% -> 10% -> 24% -> 50% -> 6%)
-        var ranges = [0.06, 0.10, 0.24, 0.50];
         var currentRange = engine.getValue(group, "rateRange");
+        var ranges = MC2000.pitchRanges;
         var currentIndex = ranges.indexOf(currentRange);
         var nextIndex = (currentIndex + 1) % ranges.length;
         engine.setValue(group, "rateRange", ranges[nextIndex]);
         if (MC2000.debugMode) {
             MC2000.debugLog(group + " pitch range: " + (ranges[nextIndex] * 100) + "%");
         }
+        // Blink LED when pitch range is changed
+        this.blinkLed();
     };
     this.keylock.unshift = function() {
         this.input = this.normalInput;
@@ -1008,6 +1032,8 @@ MC2000.Deck = function(group) {
     this.keylock.unshift();
     this.keylock.output = function(value) {
         MC2000.LedManager.reflect("keylock", value, {deck: self.deckNumber});
+        // Optionally blink LED from output if needed elsewhere
+        // Example usage: this.blinkLed();
     };
     this.keylock.connect = function() {
         engine.makeConnection(this.group, "keylock", this.output.bind(this));
