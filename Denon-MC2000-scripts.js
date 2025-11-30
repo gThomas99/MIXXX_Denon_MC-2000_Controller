@@ -313,7 +313,7 @@ MC2000.jogCenter       = 0x40;       // relative center value
 // Internal state           //
 //////////////////////////////
 // Global pitch ranges for keylock and pitch controls
-MC2000.pitchRanges = [0.05, 0.08, 0.16, 0.50];
+MC2000.pitchRanges = [0.06, 0.08, 0.12, 0.50];
 // Shift state: true if shift is currently held (button down)
 MC2000.shiftHeld = false;
 // Shift lock: true if shift lock is enabled (sticky shift)
@@ -801,6 +801,7 @@ MC2000.SamplerDeck = function(samplerNumber) {
         var isPlaying = engine.getValue(group, "play");
         if (isPlaying) {
             engine.setValue(group, "play", 0);
+            //engine.setValue(group, "stutter_play", 1);
         } else {
             engine.setValue(group, "cue_gotoandplay", 1);
         }
@@ -895,7 +896,8 @@ MC2000.Deck = function(group) {
         // Shift: cue_gotoandplay
         this.input = function(_ch, _ctrl, value, _status, group) {
             if (!MC2000.isButtonOn(value)) return;
-            engine.setValue(group, "cue_gotoandplay", 1);
+            //engine.setValue(group, "cue_gotoandplay", 1);
+            engine.setValue(group, "play_stutter", 1);
         };
     };
     this.play.unshift();
@@ -994,9 +996,9 @@ MC2000.Deck = function(group) {
 
         // Blink pattern map: index matches pitchRanges index (probably should be declared globally)
         var blinkPatterns = [
-            {period: 800, cycles: 2}, // 5%
+            {period: 800, cycles: 2}, // 6%
             {period: 500, cycles: 3}, // 8%
-            {period: 350, cycles: 4}, // 16%
+            {period: 350, cycles: 4}, // 12%
             {period: 200, cycles: 6}  // 50%
         ];
         //pattern is based on pitch range index

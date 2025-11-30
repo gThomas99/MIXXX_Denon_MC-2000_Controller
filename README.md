@@ -94,7 +94,7 @@ On startup all the lights on controller are turned on for a second to show succe
 - **Pitch Fader**: Adjusts playback speed.
 - **Sync**: Matches BPM and phase to the opposite deck. Short press one-off sync, long press for sync lock
 - **Shift Layer**: Hold `Shift` to access secondary functions (e.g., alternate hotcues, sampler controls). <SHIFT> + pfl <CUE> to enable/disable shift lock
-- **Key Lock**: Enable harmonic matching. <SHIFT> cycle through pitch ranges: 5% 8% 16% 50%. Key lock LED flashes
+- **Key Lock**: Enable harmonic matching. <SHIFT> cycle through pitch ranges: 6% 8% 12% 50%. Key lock LED flashes
 
 Moving pitch fader after a one-off Sync will return BPM to original value.
 
