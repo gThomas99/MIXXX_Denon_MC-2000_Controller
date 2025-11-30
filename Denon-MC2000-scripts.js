@@ -1734,7 +1734,7 @@ MC2000.beatTap2 = function(channel, control, value, status, group) {
  */
 MC2000.jogTouch = function(channel, control, value, status, group) {
     var deckNum = MC2000.deckIndex(group);
-    
+    MC2000.debugLog("jogTouch: control=" + control + " value=" + value + " deck=" + deckNum);
     // Convert relative encoder value to signed movement
     // MC2000 uses 0x40 as center, values wrap around 0x00-0x7F
     var movement = value - MC2000.jogCenter;
@@ -1764,6 +1764,7 @@ MC2000.jogTouch = function(channel, control, value, status, group) {
         // -------------------------------------------------
         // SCRATCH MODE (when playing)
         // -------------------------------------------------
+        
         if (!MC2000.jogScratchActive[deckNum]) {
             // Enable slip mode when starting scratch - track continues in background
            
@@ -1791,6 +1792,7 @@ MC2000.jogTouch = function(channel, control, value, status, group) {
             engine.stopTimer(MC2000.jogReleaseTimer[deckNum]);
             MC2000.jogReleaseTimer[deckNum] = null;
         }
+
         MC2000.jogReleaseTimer[deckNum] = engine.beginTimer(50, function() {
             engine.scratchDisable(deckNum);
             MC2000.jogScratchActive[deckNum] = false;
