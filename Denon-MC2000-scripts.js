@@ -44,6 +44,7 @@
 // --- Controller Build Config ---
 var MC2000Config = {
     useAltPitchBend: true, // If true, use alt <SHIFT> pitchbend buttons with jump 32 behavior. False is fwd back and forward
+    useAltPlayShift: false, // If true, use alternate play shift method (reverse roll)
     setVolumeToSafeDefault: true, // If true, set mixer and master volumes to safe default levels on init
     // Add more options as needed
     // e.g., enableFxUnits: false,
@@ -889,18 +890,46 @@ MC2000.Deck = function(group) {
     };
     // Store the original input method
     this.play.originalInput = this.play.input;
+    // Standard shift method
+    this.play.shiftedInput = function(_ch, _ctrl, value, _status, group) {
+        if (!MC2000.isButtonOn(value)) return;
+        engine.setValue(group, "cue_gotoandplay", 1);
+    };
+
+    // Alternate shift method: reverse roll
+    this.play.altShiftInput = function(_ch, _ctrl, value, _status, group) {
+        // Only activate reverse roll while both shift and play are pressed
+        if (MC2000.shiftHeld && value) {
+            if (engine.getValue(group, "reverseroll") !== 1) {
+                engine.setValue(group, "reverseroll", 1);
+            }
+        } else {
+            if (engine.getValue(group, "reverseroll") === 1) {
+                engine.setValue(group, "reverseroll", 0);
+            }
+        }
+    };
+    // Function pointer for shift behavior
+    this.play.shiftFunction = this.play.shiftedInput;
     this.play.unshift = function() {
         this.input = this.originalInput;
     };
     this.play.shift = function() {
-        // Shift: cue_gotoandplay
-        this.input = function(_ch, _ctrl, value, _status, group) {
-            if (!MC2000.isButtonOn(value)) return;
-            //engine.setValue(group, "cue_gotoandplay", 1);
-            engine.setValue(group, "play_stutter", 1);
-        };
+        this.input = this.shiftFunction;
     };
     this.play.unshift();
+    
+    // Method to swap shiftFunction between shiftedInput and altShiftInput
+    this.play.swapShiftFunction = function() {
+        this.shiftFunction = (this.shiftFunction === this.shiftedInput)
+            ? this.altShiftInput
+            : this.shiftedInput;
+    };
+    // Initialize shiftFunction based on config
+    if (typeof MC2000Config.useAltPlayShift === "boolean" && MC2000Config.useAltPlayShift) {
+        this.play.shiftFunction = this.play.altShiftInput;
+        this.play.shift();
+    }
 
     // Cue: cue type button; Shift: gotoandplay
     this.cue = new components.Button({
