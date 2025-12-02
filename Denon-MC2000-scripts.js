@@ -46,13 +46,62 @@ var MC2000Config = {
     useAltPitchBend: true, // If true, use alt <SHIFT> pitchbend buttons with jump 32 behavior. False is fwd back and forward
     useAltPlayShift: false, // If true, use alternate play shift method (reverse roll)
     setVolumeToSafeDefault: true, // If true, set mixer and master volumes to safe default levels on init
-    // Add more options as needed
+    // Add more options as needed 
+    //and write code to implement
     // e.g., enableFxUnits: false,
     // customLedStartup: true,
 };
 
 //The actual MC2000 namespace object
 var MC2000 = {};
+
+//////////////////////////////
+// Tunable constants        //
+//////////////////////////////
+// JogWheel Scratch Parameters (adapted from JogWheelScratch.js)
+// TICKS_PER_REV: Higher = less sensitive scratching
+MC2000.jogResolution   = 96;         // ticks per revolution
+// Heavier vinyl with more damping to reduce drift
+MC2000.jogRpm          = 33 +1/3;   // vinyl RPM force to float type
+MC2000.jogScratchAlpha = 1.0/16;     // bigger inertia (less easy to keep spinning)
+MC2000.jogScratchBeta  = (1.0/16)/64; // more damping (stops creeping)
+// Velocity scaling: MAX_SCALING=1 for no boost, >1 for speed ramp
+MC2000.jogMaxScaling   = 1.25;       // slight boost at quick spins
+// Fine scrubbing when paused: smaller = finer control
+MC2000.jogScrubScaling = 0.0001;     // extremely fine scrubbing
+// Pitch bend scaling for CDJ mode (outer wheel when not scratching)
+MC2000.jogPitchScale   = 1.0/4;      // scale for non-scratch jog (pitch bend)
+// MIDI center value for relative encoder
+MC2000.jogSpeedFactor = 
+MC2000.jogCenter       = 0x40;       // relative center value
+
+//////////////////////////////
+// Internal state           //
+//////////////////////////////
+// Global pitch ranges for keylock and pitch controls
+MC2000.pitchRanges = [0.06, 0.08, 0.12, 0.50];
+// Shift state: true if shift is currently held (button down)
+MC2000.shiftHeld = false;
+// Shift lock: true if shift lock is enabled (sticky shift)
+MC2000.shiftLock = false;
+
+//scratch and vinyl mode state tracking handled by component jogWHeel
+// MC2000.scratchEnabled = {"[Channel1]": false, "[Channel2]": false};
+MC2000.sampleMode = {"[Channel1]": false, "[Channel2]": false};
+// //MC2000.vinylMode = {"[Channel1]": true, "[Channel2]": true}; // Track vinyl/CDJ mode state
+// MC2000.deck = {
+//     "[Channel1]": {scratchMode: false},
+//     "[Channel2]": {scratchMode: false}
+// };
+// // JogWheel state tracking (index 0 unused, 1=deck1, 2=deck2)
+// MC2000.jogScratchActive = [false, false, false];
+// MC2000.jogReleaseTimer  = [null, null, null];
+// MC2000.jogLastTickTime  = [0, 0, 0];
+// MC2000.jogTickCount     = [0, 0, 0];
+
+
+// Number of hotcues
+MC2000.numHotcues      = 8;
 
 // MIDI Reception commands (from spec)
 MC2000.leds = {
@@ -66,18 +115,20 @@ MC2000.leds = {
 	cue3: 			21,
 	cue4: 			23,
 
-	//samp1_l: 		25,
-	//samp2_l: 		27,
-	//samp3_l: 		29,
-	//samp4_l: 		32,
-
-	samples_l: 		35,
-	//samp1_r: 		65,
-	//samp2_r: 		67,
-	//samp3_r: 		69,
-
-	//samp4_r: 		71,
+    // Sampler LEDs (Bank 1 - left deck)
+	sampler1: 		0x19,
+	sampler2: 		0x1b,
+	sampler3: 		0x1d,
+	sampler4: 		0x20,
+	// Sampler LEDs (Bank 2 - right deck)
+	sampler5: 		0x41,
+	sampler6: 		0x43,
+	sampler7: 		0x45,
+	sampler8: 		0x47,
+	
+	samples_l: 		35, //sample / hotcue leds left deck
 	samples_r: 		73,
+
 	cue: 			38,
 	play: 			39, // was wrong in the spec sheet as decimal value
 
@@ -96,16 +147,7 @@ MC2000.leds = {
 	monitorcue_l: 	69,
 	monitorcue_r: 	81,
 	
-	// Sampler LEDs (Bank 1 - left deck)
-	sampler1: 		0x19,
-	sampler2: 		0x1b,
-	sampler3: 		0x1d,
-	sampler4: 		0x20,
-	// Sampler LEDs (Bank 2 - right deck)
-	sampler5: 		0x41,
-	sampler6: 		0x43,
-	sampler7: 		0x45,
-	sampler8: 		0x47,
+	
 	// Sample mode indicator
 	samplemode: 	0x1A
 };
@@ -308,6 +350,7 @@ MC2000.jogScrubScaling = 0.0001;     // extremely fine scrubbing
 // Pitch bend scaling for CDJ mode (outer wheel when not scratching)
 MC2000.jogPitchScale   = 1.0/4;      // scale for non-scratch jog (pitch bend)
 // MIDI center value for relative encoder
+MC2000.jogSpeedFactor = 
 MC2000.jogCenter       = 0x40;       // relative center value
 
 //////////////////////////////
@@ -319,18 +362,21 @@ MC2000.pitchRanges = [0.06, 0.08, 0.12, 0.50];
 MC2000.shiftHeld = false;
 // Shift lock: true if shift lock is enabled (sticky shift)
 MC2000.shiftLock = false;
-MC2000.scratchEnabled = {"[Channel1]": false, "[Channel2]": false};
+
+//scratch and vinyl mode state tracking handled by component jogWHeel
+// MC2000.scratchEnabled = {"[Channel1]": false, "[Channel2]": false};
 MC2000.sampleMode = {"[Channel1]": false, "[Channel2]": false};
-MC2000.vinylMode = {"[Channel1]": true, "[Channel2]": true}; // Track vinyl/CDJ mode state
-MC2000.deck = {
-    "[Channel1]": {scratchMode: false},
-    "[Channel2]": {scratchMode: false}
-};
-// JogWheel state tracking (index 0 unused, 1=deck1, 2=deck2)
-MC2000.jogScratchActive = [false, false, false];
-MC2000.jogReleaseTimer  = [null, null, null];
-MC2000.jogLastTickTime  = [0, 0, 0];
-MC2000.jogTickCount     = [0, 0, 0];
+// //MC2000.vinylMode = {"[Channel1]": true, "[Channel2]": true}; // Track vinyl/CDJ mode state
+// MC2000.deck = {
+//     "[Channel1]": {scratchMode: false},
+//     "[Channel2]": {scratchMode: false}
+// };
+// // JogWheel state tracking (index 0 unused, 1=deck1, 2=deck2)
+// MC2000.jogScratchActive = [false, false, false];
+// MC2000.jogReleaseTimer  = [null, null, null];
+// MC2000.jogLastTickTime  = [0, 0, 0];
+// MC2000.jogTickCount     = [0, 0, 0];
+
 
 // Number of hotcues
 MC2000.numHotcues      = 8;
@@ -745,7 +791,7 @@ MC2000.buildLibraryControls = function() {
         type: components.Button.prototype.types.push,
     });
     MC2000.libraryFocusForwardComp.input = function(channel, control, value, status, group) {
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(channel, control, value, status)) return;
         engine.setValue("[Library]", "MoveFocusForward", 1);
         if (MC2000.debugMode) MC2000.debugLog("Library: MoveFocusForward triggered");
     };
@@ -756,7 +802,7 @@ MC2000.buildLibraryControls = function() {
         type: components.Button.prototype.types.push,
     });
     MC2000.libraryFocusBackwardComp.input = function(channel, control, value, status, group) {
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(channel, control, value, status)) return;
         engine.setValue("[Library]", "MoveFocusBackward", 1);
         if (MC2000.debugMode) MC2000.debugLog("Library: MoveFocusBackward triggered");
     };
@@ -767,7 +813,7 @@ MC2000.buildLibraryControls = function() {
         type: components.Button.prototype.types.push,
     });
     MC2000.libraryGoToItemComp.input = function(channel, control, value, status, group) {
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(channel, control, value, status)) return;
         engine.setValue("[Library]", "GoToItem", 1);
         if (MC2000.debugMode) MC2000.debugLog("Library: GoToItem triggered");
     };
@@ -798,7 +844,7 @@ MC2000.SamplerDeck = function(samplerNumber) {
     
     // Custom input: play from start if stopped, stop if playing
     this.playButton.input = function(channel, control, value, status, group) {
-        if (!MC2000.isButtonOn(value)) return; // Only act on press
+        if (!this.isPress(channel, control, value, status)) return; // Only act on press
         var isPlaying = engine.getValue(group, "play");
         if (isPlaying) {
             engine.setValue(group, "play", 0);
@@ -892,7 +938,7 @@ MC2000.Deck = function(group) {
     this.play.originalInput = this.play.input;
     // Standard shift method
     this.play.shiftedInput = function(_ch, _ctrl, value, _status, group) {
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(_ch, _ctrl, value, _status)) return;
         engine.setValue(group, "cue_gotoandplay", 1);
     };
 
@@ -952,10 +998,10 @@ MC2000.Deck = function(group) {
         this.inKey = "cue_default";
         this.input = this.originalInput;
     };
-    this.cue.shift = function() {
+        this.cue.shift = function() {
         // Override with gotoandplay behavior
         this.input = function(_ch,_ctrl,value,_status,group){
-            if (!MC2000.isButtonOn(value)) return;
+            if (!this.isPress(_ch, _ctrl, value, _status)) return;
             engine.setValue(group, "playposition", 0.0);
         };
     };
@@ -968,7 +1014,7 @@ MC2000.Deck = function(group) {
     this.sync.longPressThreshold = 1000; // 1 second in milliseconds
     var deckSelf = self; // Capture parent Deck context
     this.sync.input = function(channel, control, value, status, group) {
-        if (MC2000.isButtonOn(value)) {
+        if (this.isPress(channel, control, value, status)) {
             // Button pressed
             if (MC2000.isShiftActive()) {
                 // Shift: toggle sync lock immediately
@@ -1036,12 +1082,12 @@ MC2000.Deck = function(group) {
         MC2000.LedManager.blinkAndRestore("keylock", pattern.period, pattern.cycles, {deck: self.deckNumber});
     };
     this.keylock.normalInput = function(channel, control, value, status, group) {
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(channel, control, value, status)) return;
         // Normal: toggle keylock on/off
         engine.setValue(group, "keylock", !engine.getValue(group, "keylock"));
     };
     this.keylock.shiftedInput = function(channel, control, value, status, group) {
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(channel, control, value, status)) return;
         // Shift: cycle pitch range (6% -> 10% -> 24% -> 50% -> 6%)
         var currentRange = engine.getValue(group, "rateRange");
         var ranges = MC2000.pitchRanges;
@@ -1084,29 +1130,14 @@ MC2000.Deck = function(group) {
     this.pfl.connect = function() {
         engine.makeConnection(this.group, "pfl", this.output.bind(this));
     };
-
-    // Vinyl/CDJ mode button
-    this.vinylMode = new components.Button({
-        group: group,
-    });
-    this.vinylMode.input = function(channel, control, value, status, group) {
-        // Only act on button press, not release
-        if (!MC2000.isButtonOn(value)) return;
-        
-        // Toggle vinyl mode state
-        MC2000.vinylMode[group] = !MC2000.vinylMode[group];
-        MC2000.debugLog("Vinyl/CDJ mode toggled for " + group + ": " + 
-                       (MC2000.vinylMode[group] ? "VINYL" : "CDJ"));
-    };
-    // No LED output or connection needed as hardware handles this
-
+    
     // Sample Mode Toggle button
     this.sampleModeToggle = new components.Button({
         group: group,
         type: components.Button.prototype.types.push,
     });
     this.sampleModeToggle.input = function(channel, control, value, status, group) {
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(channel, control, value, status)) return;
         
         // Toggle sample mode state for this deck
         MC2000.sampleMode[group] = !MC2000.sampleMode[group];
@@ -1131,14 +1162,169 @@ MC2000.Deck = function(group) {
         group: group,
         type: components.Button.prototype.types.push,
     });
+
+
+    //jog wheel component constructor
+    this.jogWheel = new components.JogWheelBasic({
+        group: group,
+        inkey: "jog", //default value in components
+        deck: MC2000.deckIndex(group), // whatever deck this jogwheel controls
+        vinylMode: true, // defaults value is  true
+
+        //use global vars for jog parameters
+        wheelResolution: MC2000.jogWheelResolution, // how many ticks per revolution the jogwheel has
+        alpha: MC2000.jogAlpha, // alpha-filter
+        beta: MC2000.jogBeta, // beta-filter
+        rpm: MC2000.jogRpm, // platter rotation speed at full speed
+
+        //some extra parameters to manage relative tick counts and pitch bend and internal states
+        tickCount: 0, // count of ticks since last time-based reset
+        lastTickTime: Date.now(), // last tick time per deck index (1-based)
+        scratchEnabled: false, // scratch mode enabled state
+       
+
+        //additional jog parameters
+        jogPitchScale: MC2000.jogPitchScale, // scale factor for pitch bend nudging
+        jogMaxScaling: MC2000.jogMaxScaling, // max scaling factor for pitch bend nudging
+        jogScrubScaling: MC2000.jogScrubScaling, // scaling factor for scrub mode when paused
+       
+    });
+   //override inputWheel and inputTouch methods to allow for slip and pitch bend
+    //extend jogWheel component to override inputWheel and inputTouch methods
+    this.jogWheel.inputWheel = function(channel, control, value, status, group) {
+    
+      
+        //wheel being turned feed ticks to scratch engine if playing else do fast forwards/rewinds
+    
+        var movement1 = this.inValueScale(value);
+
+        var movement = value - MC2000.jogCenter;
+        if (movement > 64) movement -= 128;
+        if (movement < -64) movement += 128;
+        MC2000.debugLog("jogWheel: wheel input received, movement1=" + movement1 + ", movement=" + movement);
+
+
+        if (movement === 0) return; // No movement, ignore 
+         
+        var now = Date.now();
+        var timeDiff = now - this.lastTickTime;
+        if (timeDiff > 150) {
+            this.tickCount = 0;
+        }
+
+        this.tickCount++;
+        this.lastTickTime = now;
+
+        // The speedFactor won't exceed 1 if MAX_SCALING=1.
+        // If you want *some* speed ramp, set MAX_SCALING=2 or 3 or so.
+        var speedFactor = Math.min(1 + this.tickCount / 10, this.jogMaxScaling);
+
+        MC2000.debugLog("jogWheel: tickCount=" + this.tickCount + ", speedFactor=" + speedFactor);
+        var isPlaying = (engine.getValue("[Channel" + this.deck + "]", "play") === 1);
+
+        if (isPlaying) {
+
+            engine.scratchTick(this.deck, movement * speedFactor);
+        } else {
+            // -------------------------------------------------
+            // SCRUB MODE (paused)
+            // -------------------------------------------------
+            // If turning slowly, effectiveScaling=1 => super fine movement.
+            // If user spins quickly (tickCount>3), we apply speedFactor for a slight faster move.
+            var effectiveScaling = (this.tickCount > 3) ? speedFactor : 1;
+            MC2000.debugLog("jogWheel: Not playing, tickCount=" + this.tickCount + ", speedFactor=" + speedFactor+ ", effectiveScaling=" + effectiveScaling);
+            var pos = engine.getValue("[Channel" + this.deck + "]", "playposition");
+            pos += (movement * effectiveScaling * this.jogScrubScaling);
+            if (pos < 0) pos = 0;
+            if (pos > 1) pos = 1;
+            MC2000.debugLog("jogWheel: Scrub mode, new position=" + pos + ", speedFactor=" + speedFactor + ", effectiveScaling=" + effectiveScaling);
+            engine.setValue("[Channel" + this.deck + "]", "playposition", pos);
+        }
+    };
+
+    //wheelTouch - enable or disable vinyl mode scratching
+    this.jogWheel.inputTouch = function(channel, control, value, status, _group) {
+        MC2000.debugLog("jogWheel: touch input received, value=" + value + ", vinylMode=" + this.vinylMode);
+
+        if (this.isPress(channel, control, value, status) && this.vinylMode) {
+            engine.setValue(group, "slip_enabled", 1);
+            //  engine.scratchEnable(this.deck,
+            //                    MC2000.jogResolution,
+            //                    MC2000.jogRpm,
+            //                    MC2000.jogScratchAlpha,
+            //                    MC2000.jogScratchBeta);
+            engine.scratchEnable(this.deck,
+                this.wheelResolution,
+                this.rpm,
+                this.alpha,
+                this.beta);
+            this.scratchEnabled = true;
+            MC2000.debugLog("jogWheel: Scratch enabled on deck " + this.deck + " RPM=" + this.rpm);
+        } else {
+            engine.scratchDisable(this.deck);
+            engine.setValue(group, "slip_enabled", 0);
+            this.scratchEnabled = false;
+            MC2000.debugLog("jogWheel: Scratch disabled on deck " + this.deck);
+        }
+    };
+
+    //pitch bend input handler for jog wheel
+    this.jogWheel.inputPitchBend = function(channel, control, value, status, group) {
+        
+        //Denon MC2000 send different midino for jog wheel for Vinyl and CDJ mode
+        //this is pitch bend mode for CDJ style nudging
+   
+        // Convert relative encoder value to signed movement
+        var movement = value - MC2000.jogCenter;
+        
+        // Normalize to signed delta: handle wrap-around
+        if (movement > 64) movement -= 128;
+        if (movement < -64) movement += 128;
+        var movementTest = this.inValueScale(value);
+
+        MC2000.debugLog("jogWheel: pitch bend input received, movementTest=" + movementTest + ", movement=" + movement);
+        
+        //if (movement === 0) return; // No movement, ignore
+        
+        // Check if currently scratching (touch sensor active)
+        // script should never arrive here as hardware sends different midi codes
+        if (this.vinylMode && engine.scratchIsEnabled(this.deck)) {
+            // Touch sensor is active, use scratch mode but how the hell did it get here
+            MC2000.debugLog("jogWheel: scratch mode active in pitch bend input, unexpected!");
+            //call scratch tick handler
+            this.inputWheel(channel, control, value, status, group);
+        } else {
+            // No touch - use pitch bend for CDJ-style nudging
+            if (MC2000.debugMode) {
+                MC2000.debugLog("jogWheel: pitch bend mode, movement=" + movement);
+            }
+            engine.setValue(group, "jog", movement * this.jogPitchScale);
+        }
+    };
+    
+    //overide default input method , this will receive vinylMode button press
+    //output handler for deck required as this is handled by hardware
+    this.jogWheel.input = function(channel, control, value, status, group) {
+        // Only act on button press, not release
+            if (!this.isPress(channel, control, value, status)) return;
+    
+        // Toggle vinyl mode state
+        this.vinylMode = !this.vinylMode
+        MC2000.debugLog("Vinyl/CDJ mode toggled for " + group + ": " + 
+                    (this.vinylMode ? "VINYL" : "CDJ"));
+    
+    };
+
+     
+    // Load Track button: normal loads selected track, shift ejects/unloads
     this.loadTrackBtn.normalInput = function(channel, control, value, status, group) {
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(channel, control, value, status)) return;
         // Normal: Load selected track
         engine.setValue(group, "LoadSelectedTrack", 1);
         if (MC2000.debugMode) MC2000.debugLog("Load track to " + group);
     };
     this.loadTrackBtn.shiftedInput = function(channel, control, value, status, group) {
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(channel, control, value, status)) return;
         // Shift: Eject/unload track
         engine.setValue(group, "eject", 1);
         if (MC2000.debugMode) MC2000.debugLog("Eject track from " + group);
@@ -1171,13 +1357,13 @@ MC2000.Deck = function(group) {
         type: components.Button.prototype.types.push,
     });
     this.pitchBendUpBtn.normalInput = function(_ch,_ctrl,value,_status,group){
-        engine.setValue(group, "rate_temp_up", MC2000.isButtonOn(value) ? 1 : 0);
+        engine.setValue(group, "rate_temp_up", this.isPress(_ch, _ctrl, value, _status) ? 1 : 0);
     };
     this.pitchBendUpBtn.shiftedInput = function(_ch,_ctrl,value,_status,group){
-        engine.setValue(group, "fwd", MC2000.isButtonOn(value) ? 1 : 0);
+        engine.setValue(group, "fwd", this.isPress(_ch, _ctrl, value, _status) ? 1 : 0);
     };
     this.pitchBendUpBtn.altShiftInput = function(_ch, _ctrl, value, _status, group) {
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(_ch, _ctrl, value, _status)) return;
         engine.setValue(group, "beatjump_32_forward", 1);
     };
     // Function pointer for shift behavior
@@ -1196,13 +1382,13 @@ MC2000.Deck = function(group) {
         type: components.Button.prototype.types.push,
     });
     this.pitchBendDownBtn.normalInput = function(_ch,_ctrl,value,_status,group){
-        engine.setValue(group, "rate_temp_down", MC2000.isButtonOn(value) ? 1 : 0);
+        engine.setValue(group, "rate_temp_down", this.isPress(_ch, _ctrl, value, _status) ? 1 : 0);
     };
     this.pitchBendDownBtn.shiftedInput = function(_ch,_ctrl,value,_status,group){
-        engine.setValue(group, "back", MC2000.isButtonOn(value) ? 1 : 0);
+        engine.setValue(group, "back", this.isPress(_ch, _ctrl, value, _status) ? 1 : 0);
     };
     this.pitchBendDownBtn.altShiftInput = function(_ch, _ctrl, value, _status, group) {
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(_ch, _ctrl, value, _status)) return;
         engine.setValue(group, "beatjump_32_backward", 1);
     };
     
@@ -1241,7 +1427,7 @@ MC2000.Deck = function(group) {
 
     // Refactored beatTapBtn.input to use script.bpm.tapButton(deck)
     this.beatTapBtn.input = function(channel, control, value, status, group) {
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(channel, control, value, status)) return;
         if (MC2000.isShiftActive() && typeof this.shift === 'function') {
             this.shift();
         } else {
@@ -1329,7 +1515,7 @@ MC2000.Deck = function(group) {
 
     
     this.loopInBtn.normalInput = function(_ch,_ctrl,value,_status,group){
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(_ch, _ctrl, value, _status)) return;
         // Normal: Set loop in point, or activate beatloop if no loop
         var loopEnabled = engine.getValue(group, "loop_enabled");
         var loopStart = engine.getValue(group, "loop_start_position");
@@ -1343,7 +1529,7 @@ MC2000.Deck = function(group) {
         }
     };
     this.loopInBtn.shiftedInput = function(_ch,_ctrl,value,_status,group){
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(_ch, _ctrl, value, _status)) return;
         // Shift: Jump to loop in point (if loop exists)
         var loopStart = engine.getValue(group, "loop_start_position");
         if (loopStart !== -1) {
@@ -1371,12 +1557,12 @@ MC2000.Deck = function(group) {
         type: components.Button.prototype.types.push,
     });
     this.loopOutBtn.normalInput = function(_ch,_ctrl,value,_status,group){
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(_ch, _ctrl, value, _status)) return;
         // Normal: Set loop out point
         engine.setValue(group, "loop_out", 1);
     };
     this.loopOutBtn.shiftedInput = function(_ch,_ctrl,value,_status,group){
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(_ch, _ctrl, value, _status)) return;
         // Shift: Jump to loop out point (if loop exists)
         var loopEnd = engine.getValue(group, "loop_end_position");
         if (loopEnd !== -1) {
@@ -1404,11 +1590,11 @@ MC2000.Deck = function(group) {
         type: components.Button.prototype.types.push,
     });
     this.loopHalveBtn.normalInput = function(_ch,_ctrl,value,_status,group){
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(_ch, _ctrl, value, _status)) return;
         engine.setValue(group, "loop_halve", 1);
     };
     this.loopHalveBtn.shiftedInput = function(_ch,_ctrl,value,_status,group){
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(_ch, _ctrl, value, _status)) return;
         engine.setValue(group, "beatjump_1_backward", 1);
     };
     this.loopHalveBtn.unshift = function() {
@@ -1426,11 +1612,11 @@ MC2000.Deck = function(group) {
         type: components.Button.prototype.types.push,
     });
     this.loopDoubleBtn.normalInput = function(_ch,_ctrl,value,_status,group){
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(_ch, _ctrl, value, _status)) return;
         engine.setValue(group, "loop_double", 1);
     };
     this.loopDoubleBtn.shiftedInput = function(_ch,_ctrl,value,_status,group){
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(_ch, _ctrl, value, _status)) return;
         engine.setValue(group, "beatjump_1_forward", 1);
     };
     this.loopDoubleBtn.unshift = function() {
@@ -1448,7 +1634,7 @@ MC2000.Deck = function(group) {
         type: components.Button.prototype.types.push,
     });
     this.reloopExitBtn.normalInput = function(_ch,_ctrl,value,_status,group){
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(_ch, _ctrl, value, _status)) return;
         var loopStart = engine.getValue(group, "loop_start_position");
         
         if (loopStart !== -1) {
@@ -1460,7 +1646,7 @@ MC2000.Deck = function(group) {
         }
     };
     this.reloopExitBtn.shiftedInput = function(_ch,_ctrl,value,_status,group){
-        if (!MC2000.isButtonOn(value)) return;
+        if (!this.isPress(_ch, _ctrl, value, _status)) return;
         var loopStart = engine.getValue(group, "loop_start_position");
         
         if (loopStart !== -1) {
@@ -1511,7 +1697,7 @@ MC2000.Deck = function(group) {
             
             // Shifted input: clear hotcue
             hotcue.shiftedInput = function(channel, control, value, status, group) {
-                if (MC2000.isButtonOn(value)) {
+                if (this.isPress(channel, control, value, status)) {
                     var pos = engine.getValue(group, "hotcue_" + this.number + "_position");
                     if (pos !== -1) {
                         engine.setValue(group, "hotcue_" + this.number + "_clear", 1);
@@ -1637,6 +1823,40 @@ MC2000.sampleModeToggle = function(channel, control, value, status, group) {
 };
 
 //////////////////////////////
+// Vinyl/CDJ Mode Toggle    //
+//////////////////////////////
+MC2000.vinylModeToggle = function(channel, control, value, status, group) {
+    if (MC2000.decks && MC2000.decks[group] && MC2000.decks[group].jogWheel) {
+        MC2000.decks[group].jogWheel.input(channel, control, value, status, group);
+    } else {
+        MC2000.debugLog("ERROR: vinylModeToggle - deck or jogWheel not initialized for " + group);
+    }
+};
+
+MC2000.jogWheel = function(channel, control, value, status, group) {
+    if (MC2000.decks && MC2000.decks[group] && MC2000.decks[group].jogWheel) {
+        MC2000.decks[group].jogWheel.inputWheel(channel, control, value, status, group);
+    } else {
+        MC2000.debugLog("ERROR: jogWheel - deck or jogWheel not initialized for " + group);
+    }
+};
+
+MC2000.jogWheelPitchBend = function(channel, control, value, status, group) {
+    if (MC2000.decks && MC2000.decks[group] && MC2000.decks[group].jogWheel) {
+        MC2000.decks[group].jogWheel.inputPitchBend(channel, control, value, status, group);
+    } else {
+        MC2000.debugLog("ERROR: jogWheelPitchBend - deck or jogWheel not initialized for " + group);
+    }
+};
+
+MC2000.jogWheelTouch = function(channel, control, value, status, group) {
+    if (MC2000.decks && MC2000.decks[group] && MC2000.decks[group].jogWheel) {
+        MC2000.decks[group].jogWheel.inputTouch(channel, control, value, status, group);
+    } else {
+        MC2000.debugLog("ERROR: jogWheelTouch - deck or jogWheel not initialized for " + group);
+    }
+};
+//////////////////////////////
 // Load Track               //
 //////////////////////////////
 MC2000.loadTrack = function(channel, control, value, status, group) {
@@ -1738,12 +1958,14 @@ MC2000.jogTouch = function(channel, control, value, status, group) {
     // Convert relative encoder value to signed movement
     // MC2000 uses 0x40 as center, values wrap around 0x00-0x7F
     var movement = value - MC2000.jogCenter;
-    
+
+
     // Normalize to signed delta: handle wrap-around
     if (movement > 64) movement -= 128;
     if (movement < -64) movement += 128;
     
-    if (movement === 0) return; // No movement, ignore
+
+    if (movement === 0) return; // No movement, ignore. 
     
     // Time-based spin detection for velocity scaling
     var now = Date.now();
@@ -1767,7 +1989,7 @@ MC2000.jogTouch = function(channel, control, value, status, group) {
         
         if (!MC2000.jogScratchActive[deckNum]) {
             // Enable slip mode when starting scratch - track continues in background
-           
+
             var slipEnabled = engine.getValue(group, "slip_enabled");
             if (!slipEnabled) {
                 engine.setValue(group, "slip_enabled", 1);
@@ -1779,6 +2001,7 @@ MC2000.jogTouch = function(channel, control, value, status, group) {
                                MC2000.jogRpm,
                                MC2000.jogScratchAlpha,
                                MC2000.jogScratchBeta);
+
             MC2000.jogScratchActive[deckNum] = true;
             MC2000.deck[group].scratchMode = true;
             if (MC2000.debugMode) MC2000.debugLog("Scratch enabled: " + group);
@@ -1801,7 +2024,7 @@ MC2000.jogTouch = function(channel, control, value, status, group) {
             engine.setValue(group, "slip_enabled", 0);
             MC2000.jogReleaseTimer[deckNum] = null;
             if (MC2000.debugMode) MC2000.debugLog("Scratch disabled, slip off: " + group);
-        }, true); // one-shot timer
+        }, MC2000.lastJogTime[deckNum]= Date.now()); // one-shot timer
         
     } else {
         // -------------------------------------------------
@@ -1824,6 +2047,48 @@ MC2000.jogTouch = function(channel, control, value, status, group) {
         }
     }
 };
+
+// === JOG WHEEL ===
+//lifted from standard denon
+// The button that enables/disables scratching
+MC2000.jogTouch1 = function(channel, control, value, status, group){
+	var deck = channel + 1;
+    var temp = status & 0xF0;
+	MC2000.debugLog("jogTouch: control=" + control + " value=" + value + " status=" + status.toString(16) + " " + temp + " deck=" + deck);
+
+	//if ((status & 0xF0) === 0x90) {    // If button down
+    if(!MC2000.jogScratchActive[deck]){
+        MC2000.debugLog("jogTouch: enable scratch on deck " + deck);
+        MC2000.jogScratchActive[deck] = true;
+        MC2000.deck[group].scratchMode = true;
+
+        var slipEnabled = engine.getValue(group, "slip_enabled");
+            // if (!slipEnabled) {
+            //     engine.setValue(group, "slip_enabled", 1);
+            //     if (MC2000.debugMode) MC2000.debugLog("Slip mode enabled: " + group);
+            // }
+            
+        
+
+        // if (MC2000.state["shift"] === true) // If shift is pressed, do a fast search
+        // 	rpm = 30.0;
+        engine.scratchEnable(deck,
+                               MC2000.jogResolution,
+                               MC2000.jogRpm,
+                               MC2000.jogScratchAlpha,
+                               MC2000.jogScratchBeta);
+
+
+        //engine.scratchEnable(deck, 128, rpm, alpha, beta, true);
+    }
+    // else {    // If button up
+    //     engine.scratchDisable(deck);
+    //        engine.setValue(group, "slip_enabled", 0);
+    //     MC2000.jogScratchActive[deck] = false;
+    //     MC2000.deck[group].scratchMode = false;
+    // }
+};
+
 
 // Outer wheel (0x52) uses pitch bend when not scratching (CDJ mode)
 MC2000.jogWheel = function(channel, control, value, status, group) {

@@ -95,6 +95,7 @@ On startup all the lights on controller are turned on for a second to show succe
 - **Sync**: Matches BPM and phase to the opposite deck. Short press one-off sync, long press for sync lock
 - **Shift Layer**: Hold `Shift` to access secondary functions (e.g., alternate hotcues, sampler controls). <SHIFT> + pfl <CUE> to enable/disable shift lock
 - **Key Lock**: Enable harmonic matching. <SHIFT> cycle through pitch ranges: 6% 8% 12% 50%. Key lock LED flashes
+- **Jog Wheel**: Scratching in vinyl mode, pitch bend in CDJ mode. VINYL MODE button to set mode
 
 Moving pitch fader after a one-off Sync will return BPM to original value.
 
@@ -206,6 +207,6 @@ It took me two attempts to write this controller. On the first attempt I was str
 - [Denon Support]( https://www.denondj.com/downloads.html#legacy) legacy product
 - [Serato MC2000 page]( https://serato.com/dj/hardware/denon-dj-mc2000)
 - [Picheto's Mapping on MIXXX forum](https://mixxx.discourse.group/t/denon-mc2000-controller-midi-mapping-and-script/14103)
-- [JogWHeel Script]( https://github.com/gold-alex/)
+- [JogWHeel Script](https://github.com/gold-alex/Rotary-Encoder-Jogwheel-Mixxx)
 
 
