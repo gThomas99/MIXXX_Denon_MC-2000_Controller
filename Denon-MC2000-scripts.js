@@ -1232,42 +1232,40 @@ MC2000.Deck = function(group) {
 
         if (movement === 0) return; // No movement, ignore
         // Ensure scratch disabled when scrubbing
-        if (this.scratchEnabled) this.disableScratch();
+        //this.disableScratch();
         this.tickUpdate();
 
         // SCRUB MODE (paused) when shift is held: coarser seeking
         var speedFactorShift = Math.min(1 + this.tickCount / MC2000.jogShiftScalingDivisor, this.jogMaxScaling * 1.5);
         var effectiveScaling = (this.tickCount > 3) ? speedFactorShift : 1;
         var coarseFactor = MC2000.jogShiftCoarseFactor || 20; // coarse multiplier for shifted scrub
-        MC2000.debugLog("jogWheel (shift): Not playing, tickCount=" + this.tickCount + ", effectiveScaling=" + effectiveScaling);
+        
+        // SCRUB MODE (paused) when shift is held: coarser seeking
+        //MC2000.debugLog("jogWheel (shift): Scrub mode, tickCount=" + this.tickCount + ", effectiveScaling=" + effectiveScaling);
         var pos = engine.getValue("[Channel" + this.deck + "]", "playposition");
         pos += (movement * effectiveScaling * this.jogScrubScaling * coarseFactor);
         if (pos < 0) pos = 0;
         if (pos > 1) pos = 1;
         engine.setValue("[Channel" + this.deck + "]", "playposition", pos);
+        
     };
-    // Normal jog wheel handler: scratch when playing, fine scrub when paused
+
+    // Normal jog wheel handler: scratch when playing, 
     this.jogWheel.inputWheel = function(channel, control, value, status, group) {
         var movement = this.getMovement(value);
         if (movement === 0) return; // No movement, ignore
 
+        //user has touched top of wheel and scratch engine is running
+        if(this.vinylMode && this.scratchEnabled){
         this.tickUpdate();
         var speedFactor = Math.min(1 + this.tickCount / 10, this.jogMaxScaling);
-
-        //var isPlaying = (engine.getValue("[Channel" + this.deck + "]", "play") === 1);
-
-        if (true) {
-            if (!this.scratchEnabled) this.enableScratch();
-            MC2000.debugLog("jogWheel: Scratch mode, movement=" + movement + ", speedFactor=" + speedFactor);
-            engine.scratchTick(this.deck, movement * speedFactor);
-        } else {
-            if (this.scratchEnabled) this.disableScratch();
-            var effectiveScaling = (this.tickCount > 3) ? speedFactor : 1;
-            var pos = engine.getValue("[Channel" + this.deck + "]", "playposition");
-            pos += (movement * effectiveScaling * this.jogScrubScaling);
-            if (pos < 0) pos = 0;
-            if (pos > 1) pos = 1;
-            engine.setValue("[Channel" + this.deck + "]", "playposition", pos);
+           
+        engine.scratchTick(this.deck, movement * speedFactor);
+        //MC2000.debugLog("jogWheel: inputWheel, tickCount=" + this.tickCount + ", speedFactor=" + speedFactor + ", movement=" + movement);
+        } 
+        //side touch only so jog wheel. Should be vinyl mode
+        else {
+            engine.setValue(group, "jog", movement * this.jogPitchScale);
         }
     };
 
@@ -1300,7 +1298,7 @@ MC2000.Deck = function(group) {
     this.jogWheel.inputTouch = function(channel, control, value, status, _group) {
         MC2000.debugLog("JOGTOUCH: touch input received, value=" + value + ", vinylMode=" + this.vinylMode);
         var isPress = this.isPress(channel, control, value, status);
-        var isPlaying = (engine.getValue("[Channel" + this.deck + "]", "play") === 1);
+        // var isPlaying = (engine.getValue("[Channel" + this.deck + "]", "play") === 1);
 
         // Ensure a single persistent watcher timer is running to handle debounce
         var self = this;
@@ -1311,8 +1309,10 @@ MC2000.Deck = function(group) {
                         if (self.releasePending && Date.now() >= self.releasePendingExpires) {
                             self.releasePending = false;
                             self.releasePendingExpires = 0;
-                            self.disableScratch();
-                            MC2000.debugLog("jogWheel.watch: Scratch disabled on deck " + self.deck);
+                                if (self.scratchEnabled) {
+                                    self.disableScratch();
+                                    MC2000.debugLog("jogWheel.watch: Scratch disabled on deck " + self.deck);
+                                }
                         }
                     } catch (e) {}
                 });
@@ -1327,14 +1327,17 @@ MC2000.Deck = function(group) {
             this.releasePending = false;
             this.releasePendingExpires = 0;
 
+            this.enableScratch();
+
             // If deck is already playing, enable scratch immediately
-            if (isPlaying) {
-                if (!this.scratchEnabled) this.enableScratch();
-            }
+            // if (isPlaying) {
+            //     if (!this.scratchEnabled) this.enableScratch();
+            // }
         } else {
             // On release: mark pending disable and let the persistent watcher handle it
             this.releasePending = true;
             this.releasePendingExpires = Date.now() + 50; // debounce window
+            this.disableScratch();
         }
     };
 
@@ -1346,24 +1349,18 @@ MC2000.Deck = function(group) {
    
         // Convert relative encoder value to signed movement
         var movement = this.getMovement(value);
-        
-        MC2000.debugLog("jogWheel: pitch bend input received, movement=" + movement);
-        
+                     
         if (movement === 0) return; // No movement, ignore
         
+        engine.setValue(group, "jog", movement * this.jogPitchScale);
+
         // Check if currently scratching (touch sensor active)
         // script should never arrive here as hardware sends different midi codes
-        if (this.vinylMode && this.scratchEnabled) {
+        if (this.vinylMode || this.scratchEnabled) {
             // Touch sensor is active, use scratch mode but how the hell did it get here
-            MC2000.debugLog("jogWheel: scratch mode active in pitch bend input, unexpected!");
+            MC2000.debugLog("jogWheel: vinyl or scratch mode active in pitch bend input, unexpected!");
             //call scratch tick handler
             //this.inputWheel(channel, control, value, status, group);
-        } else {
-            // No touch - use pitch bend for CDJ-style nudging
-            if (MC2000.debugMode) {
-                MC2000.debugLog("jogWheel: pitch bend mode, movement=" + movement);
-            }
-            engine.setValue(group, "jog", movement * this.jogPitchScale);
         }
     };
     
