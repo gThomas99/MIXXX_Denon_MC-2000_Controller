@@ -1201,6 +1201,39 @@ MC2000.Deck = function(group) {
         }
         this.scratchEnabled = false;
     };
+    //jog wheel touch handler - enable or disable scratching
+    this.jogWheel.inputTouch = function(channel, control, value, status, _group) {
+        //Get button status
+        var isPress = this.isPress(channel, control, value, status);
+
+        //this will only occur because we are in vinyl mode but check logic is correct
+        if(!this.vinylMode && isPress ){
+            MC2000.debugLog("jogWheel: LOGIC ERROR inputTouch called but vinylMode is false on deck " + this.deck);
+        }
+        //turn on scratch engine when user touches top of wheel
+        if(isPress){
+            if (this.useSlipOnScratch) {
+                try { engine.setValue(group, "slip_enabled", 1); } catch (e) {}
+            }
+            engine.scratchEnable(this.deck,
+                this.wheelResolution,
+                this.rpm,
+                this.alpha,
+                this.beta);
+            this.scratchEnabled = true;
+            MC2000.debugLog("jogWheel: Scratch enabled on deck " + this.deck + " RPM=" + this.rpm);
+        }
+        else {
+            //user has released top of wheel
+            engine.scratchDisable(this.deck);
+            if (this.useSlipOnScratch) {
+                try { engine.setValue(group, "slip_enabled", 0); } catch (e) {
+                    MC2000.debugLog("Failed to disable slip mode on deck " + this.deck);
+                }
+            }
+            this.scratchEnabled = false;
+        }
+    };
 
     //normalises and set sign for jog wheel ticks
     this.jogWheel.getMovement = function(value) {
@@ -1256,14 +1289,15 @@ MC2000.Deck = function(group) {
         if (movement === 0) return; // No movement, ignore
 
         //user has touched top of wheel and scratch engine is running
-        if(this.vinylMode && this.scratchEnabled){
-        this.tickUpdate();
-        var speedFactor = Math.min(1 + this.tickCount / 10, this.jogMaxScaling);
+        //if(this.vinylMode && this.scratchEnabled){
+        if (engine.isScratching(this.deck)) {
+            this.tickUpdate();
+            var speedFactor = Math.min(1 + this.tickCount / 10, this.jogMaxScaling);
            
-        engine.scratchTick(this.deck, movement * speedFactor);
+            engine.scratchTick(this.deck, movement * speedFactor);
         //MC2000.debugLog("jogWheel: inputWheel, tickCount=" + this.tickCount + ", speedFactor=" + speedFactor + ", movement=" + movement);
         } 
-        //side touch only so jog wheel. Should be vinyl mode
+        //side touch only so jog wheel.( pitch bend nudging)
         else {
             engine.setValue(group, "jog", movement * this.jogPitchScale);
         }
@@ -1295,7 +1329,7 @@ MC2000.Deck = function(group) {
     // Example causes: LED blink timers, sync long-press timers, and the
     // jog wheel release debounce used below.
 
-    this.jogWheel.inputTouch = function(channel, control, value, status, _group) {
+    this.jogWheel.inputTouchWithTimers = function(channel, control, value, status, _group) {
         MC2000.debugLog("JOGTOUCH: touch input received, value=" + value + ", vinylMode=" + this.vinylMode);
         var isPress = this.isPress(channel, control, value, status);
         // var isPlaying = (engine.getValue("[Channel" + this.deck + "]", "play") === 1);

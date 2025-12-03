@@ -335,7 +335,7 @@
       <!-- Jog Wheel Pitch Bendencoder Deck 1 -->
       <control>
         <group>[Channel1]</group>
-        <key>MC2000.decks['[Channel1]'].jogWheel.inputPitchBend</key>
+        <key>MC2000.decks['[Channel1]'].jogWheel.inputWheel</key>
         <status>0xB0</status>
         <midino>0x52</midino>
         <options><Script-Binding/></options>
@@ -366,13 +366,12 @@
         <options><Script-Binding/></options>
       </control>
       
-
       <!-- Jog touch deck 2 (CC message B0+channel) -->
        <!-- Scratch Enable/Disable button (MIDI 0x51) Deck 2 -->
         <!-- Jog wheel rotation deck 2 (CC message) -->
       <control>
         <group>[Channel2]</group>
-        <key>MC2000.decks['[Channel2]'].jogWheel.inputPitchBend</key>
+        <key>MC2000.decks['[Channel2]'].jogWheel.inputWheel</key>
         <status>0xB1</status>
         <midino>0x52</midino>
         <options><Script-Binding/></options>
