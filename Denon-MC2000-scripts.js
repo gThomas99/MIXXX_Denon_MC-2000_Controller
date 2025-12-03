@@ -1157,20 +1157,14 @@ MC2000.Deck = function(group) {
         beta: (typeof MC2000.jogBeta === 'number') ? MC2000.jogBeta : MC2000.jogScratchBeta, // beta-filter
         rpm: (typeof MC2000.jogRpm === 'number') ? MC2000.jogRpm : 33.333333333333336, // platter rotation speed at full speed
 
-        //some extra parameters to manage relative tick counts and pitch bend and internal states
+        //some extra parameters to manage relative tick counts  and internal states
         tickCount: 0, // count of ticks since last time-based reset
         lastTickTime: Date.now(), // last tick time per deck index (1-based)
         scratchEnabled: false, // scratch mode enabled state
-        // Deprecated: individual short-lived timers caused Mixxx "Killing timer" noise.
-        // Replace with a single persistent watcher below using releasePending/releaseWatcherTimer.
-        releaseTimer: null,
-        releasePending: false,
-        releasePendingExpires: 0,
-        releaseWatcherTimer: null,
+        
         // Whether enabling scratch should also enable slip mode on the channel
         useSlipOnScratch: (typeof MC2000.jogEnableSlipOnScratch === 'boolean') ? MC2000.jogEnableSlipOnScratch : true,
        
-
         //additional jog parameters
         jogPitchScale: MC2000.jogPitchScale, // scale factor for pitch bend nudging
         jogMaxScaling: MC2000.jogMaxScaling, // max scaling factor for pitch bend nudging
@@ -1178,40 +1172,11 @@ MC2000.Deck = function(group) {
        
     });
 
-    //Jogwheel helpers enable and disable vinyl mode scratching
-    this.jogWheel.enableScratch = function() {
-        if (this.useSlipOnScratch) {
-            try { engine.setValue(group, "slip_enabled", 1); } catch (e) {}
-        }
-        engine.scratchEnable(this.deck,
-                this.wheelResolution,
-                this.rpm,
-                this.alpha,
-                this.beta);
-            this.scratchEnabled = true;
-        MC2000.debugLog("jogWheel: Scratch enabled on deck " + this.deck + " RPM=" + this.rpm);
-    };
-    
-    this.jogWheel.disableScratch = function() {
-        engine.scratchDisable(this.deck);
-        if (this.useSlipOnScratch) {
-            try { engine.setValue(group, "slip_enabled", 0); } catch (e) {
-                MC2000.debugLog("Failed to disable slip mode on deck " + this.deck);
-            }
-        }
-        this.scratchEnabled = false;
-    };
     //jog wheel touch handler - enable or disable scratching
     this.jogWheel.inputTouch = function(channel, control, value, status, _group) {
-        //Get button status
-        var isPress = this.isPress(channel, control, value, status);
-
-        //this will only occur because we are in vinyl mode but check logic is correct
-        if(!this.vinylMode && isPress ){
-            MC2000.debugLog("jogWheel: LOGIC ERROR inputTouch called but vinylMode is false on deck " + this.deck);
-        }
+        
         //turn on scratch engine when user touches top of wheel
-        if(isPress){
+        if(this.isPress(channel, control, value, status)){
             if (this.useSlipOnScratch) {
                 try { engine.setValue(group, "slip_enabled", 1); } catch (e) {}
             }
@@ -1222,6 +1187,11 @@ MC2000.Deck = function(group) {
                 this.beta);
             this.scratchEnabled = true;
             MC2000.debugLog("jogWheel: Scratch enabled on deck " + this.deck + " RPM=" + this.rpm);
+
+             //this will only occur because we are in vinyl mode but check logic is correct
+            if(!this.vinylMode  ){
+                MC2000.debugLog("jogWheel: LOGIC ERROR inputTouch called but vinylMode is false on deck " + this.deck);
+        }
         }
         else {
             //user has released top of wheel
@@ -1308,95 +1278,6 @@ MC2000.Deck = function(group) {
     this.jogWheel.inputWheel = this.jogWheel.inputWheelNormal;
     this.jogWheel.unshift = function() { this.inputWheel = this.inputWheelNormal; };
     this.jogWheel.shift = function() { this.inputWheel = this.inputWheelShift; };
-
-    //wheelTouch - enable or disable vinyl mode scratching
-    // NOTE: Mixxx may log messages like "Killing timer: 65" when timers
-    // are stopped. These messages are issued by Mixxx when a timer created
-    // via `engine.beginTimer(...)` is canceled via `engine.stopTimer(id)` or
-    // when the script/engine cleans up timers. Rapid touch/release events
-    // can create and then immediately stop short-lived timers which in
-    // turn produces many "Killing timer" log lines (a harmless but noisy
-    // symptom). To reduce that churn we debounce the disable path using
-    // `this.releaseTimer` so we don't call `disableScratch()` on every
-    // release immediately. If you still see a specific timer id (e.g.
-    // "Killing timer: 65") in the logs, it refers to the internal timer
-    // id Mixxx assigned when `engine.beginTimer` was called; the release
-    // debounce uses a 50ms timer and will cancel it if the wheel is
-    // re-touched before the timeout.
-    //
-    // If you're debugging a particular timer id, enable `MC2000.debugMode`
-    // and search for where we call `engine.beginTimer`/`engine.stopTimer`.
-    // Example causes: LED blink timers, sync long-press timers, and the
-    // jog wheel release debounce used below.
-
-    this.jogWheel.inputTouchWithTimers = function(channel, control, value, status, _group) {
-        MC2000.debugLog("JOGTOUCH: touch input received, value=" + value + ", vinylMode=" + this.vinylMode);
-        var isPress = this.isPress(channel, control, value, status);
-        // var isPlaying = (engine.getValue("[Channel" + this.deck + "]", "play") === 1);
-
-        // Ensure a single persistent watcher timer is running to handle debounce
-        var self = this;
-        if (!this.releaseWatcherTimer) {
-            try {
-                this.releaseWatcherTimer = engine.beginTimer(50, function() {
-                    try {
-                        if (self.releasePending && Date.now() >= self.releasePendingExpires) {
-                            self.releasePending = false;
-                            self.releasePendingExpires = 0;
-                                if (self.scratchEnabled) {
-                                    self.disableScratch();
-                                    MC2000.debugLog("jogWheel.watch: Scratch disabled on deck " + self.deck);
-                                }
-                        }
-                    } catch (e) {}
-                });
-                if (MC2000.debugMode) MC2000.debugLog("jogWheel: started releaseWatcherTimer " + this.releaseWatcherTimer + " for deck " + this.deck);
-            } catch (e) {
-                MC2000.debugLog('Failed to start releaseWatcherTimer: ' + e);
-            }
-        }
-
-        if (isPress && this.vinylMode) {
-            // On press: clear any pending release so we don't immediately disable
-            this.releasePending = false;
-            this.releasePendingExpires = 0;
-
-            this.enableScratch();
-
-            // If deck is already playing, enable scratch immediately
-            // if (isPlaying) {
-            //     if (!this.scratchEnabled) this.enableScratch();
-            // }
-        } else {
-            // On release: mark pending disable and let the persistent watcher handle it
-            this.releasePending = true;
-            this.releasePendingExpires = Date.now() + 50; // debounce window
-            this.disableScratch();
-        }
-    };
-
-    //pitch bend input handler for jog wheel in CDJ mode NOT vinyl mode
-    this.jogWheel.inputPitchBend = function(channel, control, value, status, group) {
-        
-        //Denon MC2000 send different midino for jog wheel for Vinyl and CDJ mode
-        //this is pitch bend mode for CDJ style nudging
-   
-        // Convert relative encoder value to signed movement
-        var movement = this.getMovement(value);
-                     
-        if (movement === 0) return; // No movement, ignore
-        
-        engine.setValue(group, "jog", movement * this.jogPitchScale);
-
-        // Check if currently scratching (touch sensor active)
-        // script should never arrive here as hardware sends different midi codes
-        if (this.vinylMode || this.scratchEnabled) {
-            // Touch sensor is active, use scratch mode but how the hell did it get here
-            MC2000.debugLog("jogWheel: vinyl or scratch mode active in pitch bend input, unexpected!");
-            //call scratch tick handler
-            //this.inputWheel(channel, control, value, status, group);
-        }
-    };
     
     //overide default input method , this will receive vinylMode button press
     //output handler not required as this is handled by hardware
@@ -1408,6 +1289,18 @@ MC2000.Deck = function(group) {
         this.vinylMode = !this.vinylMode
         MC2000.debugLog("Vinyl/CDJ mode toggled for " + group + ": " + 
                     (this.vinylMode ? "VINYL" : "CDJ"));
+        //turn off scratch engine if switching to CDJ mode
+        if (!this.vinylMode && this.scratchEnabled) {
+            engine.scratchDisable(this.deck);
+            this.scratchEnabled = false;
+
+            //check if slip mode needs to be disabled
+            if(engine.getValue(group, "slip_enabled") === 1){
+                try { engine.setValue(group, "slip_enabled", 0); } catch (e) {
+                    MC2000.debugLog("Failed to disable slip mode on deck " + this.deck);
+                }
+            }
+        }            
     
     };
     
