@@ -45,6 +45,7 @@
 var MC2000Config = {
     useAltPitchBend: true, // If true, use alt <SHIFT> pitchbend buttons with jump 32 behavior. False is fwd back and forward
     useAltPlayShift: false, // If true, use alternate play shift method (reverse roll)
+    useMidEqAsFilter: false, // If true, use mid EQ knob as filter when shift is held
     setVolumeToSafeDefault: true, // If true, set mixer and master volumes to safe default levels on init
     // Add more options as needed 
     //and write code to implement
@@ -693,7 +694,7 @@ MC2000.FxUnit = function(unitNumber) {
      */
     this.applyShiftState = function(shifted) {
         if (this.wetDryEncoder) {
-            this.wetDryEncoder.input = shifted ? this.wetDryEncoder.shift : this.wetDryEncoder.input;
+            this.wetDryEncoder.input = shifted ? this.wetDryEncoder.shift : this.wetDryEncoder.normalInput;
         }
     };
 };
@@ -1231,6 +1232,7 @@ MC2000.Deck = function(group) {
     // Separate method for shifted wheel behavior: coarse seek when paused,
     // stronger scratch when playing. Tunables are exposed via MC2000.* vars.
     this.jogWheel.inputWheelShift = function(channel, control, value, status, group) {
+        MC2000.debugLog("jogWheel: Shifted inputWheel called on deck " + this.deck);
         var movement = this.getMovement(value);
 
         if (movement === 0) return; // No movement, ignore
@@ -1256,6 +1258,7 @@ MC2000.Deck = function(group) {
     // Normal jog wheel handler: scratch when playing, 
     this.jogWheel.inputWheel = function(channel, control, value, status, group) {
         var movement = this.getMovement(value);
+        MC2000.debugLog("jogWheel: Normal inputWheel called on deck " + this.deck + ", movement=" + movement);
         if (movement === 0) return; // No movement, ignore
 
         //user has touched top of wheel and scratch engine is running
@@ -1333,7 +1336,18 @@ MC2000.Deck = function(group) {
 
     // EQ: high, mid, low knobs
     this.eqHigh = new components.Pot({ group: "[EqualizerRack1_" + group + "_Effect1]", inKey: "parameter3" });
-    this.eqMid = new components.Pot({ group: "[EqualizerRack1_" + group + "_Effect1]", inKey: "parameter2" });
+    // Configurable: use mid knob as filter when enabled
+    if (!MC2000Config) { MC2000Config = {}; }
+    if (typeof MC2000Config.useMidEqAsFilter === 'undefined') {
+        MC2000Config.useMidEqAsFilter = false; // default off
+    }
+    if (MC2000Config.useMidEqAsFilter) {
+        // Map mid knob to channel filter (QuickEffect super1)
+        this.eqMid = new components.Pot({ group: "[QuickEffectRack1_" + group + "]", inKey: "super1" });
+    } else {
+        // Default: mid EQ parameter
+        this.eqMid = new components.Pot({ group: "[EqualizerRack1_" + group + "_Effect1]", inKey: "parameter2" });
+    }
     this.eqLow = new components.Pot({ group: "[EqualizerRack1_" + group + "_Effect1]", inKey: "parameter1" });
 
     // Pitch: simple pot to rate parameter (expects 0..1); wrappers convert CC value
