@@ -1,8 +1,10 @@
 # Set your music directory and playlist name
 
 # Set your main music directory
-$musicDir = "Z:\music\DiscoMP3\"
-$playListDest = "Z:\music\_playlist\"
+$musicDir = "Z:\yourMusicDirector"
+$playListDest = "Z:\yourPlaylistDirectory\"
+
+# Set the suffix for the playlist files
 $suffix = "MP3"
 
 # Get all child directories (1 level deep)

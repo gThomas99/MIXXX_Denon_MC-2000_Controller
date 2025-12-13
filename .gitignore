@@ -52,3 +52,4 @@ temp/
 #Application files #
 ##################
 config.env
+create-m3ulive.ps1

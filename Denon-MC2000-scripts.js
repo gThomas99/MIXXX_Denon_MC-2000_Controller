@@ -890,6 +890,8 @@ MC2000.Deck = function(group) {
         group: group,
         inKey: "play",
         type: components.Button.prototype.types.toggle,
+        //play component does not handle on off so use toggle type
+        //type: components.Button.prototype.types.play,
     });
     this.play.output = function(value) {
         MC2000.LedManager.reflect("play", value, {deck: self.deckNumber});
@@ -1015,7 +1017,7 @@ MC2000.Deck = function(group) {
                 engine.setValue(group, "beatsync", 1);
 
                 // Blink sync LED for 1000ms to show one-shot beatsync
-                MC2000.LedManager.blinkAndRestore("sync", 1000, 4, {deck: deckSelf.deckNumber});
+                MC2000.LedManager.blinkAndRestore("sync", 500, 4, {deck: deckSelf.deckNumber});
             }
         }
     };
@@ -1048,7 +1050,7 @@ MC2000.Deck = function(group) {
             {period: 200, cycles: 6}  // 50%
         ];
         //pattern is based on pitch range index
-        var idx = ranges.indexOf(pitchRange);
+        var idx = ranges.indexOf(pitchRange) % 4;
         var pattern = blinkPatterns[idx] || {period: 500, cycles: 2};
         MC2000.LedManager.blinkAndRestore("keylock", pattern.period, pattern.cycles, {deck: self.deckNumber});
     };
@@ -1135,10 +1137,7 @@ MC2000.Deck = function(group) {
     });
 
     /*******************************************************************
-     * https://github.com/gold-alex/Rotary-Encoder-Jogwheel-Mixxx/blob/main/JogWheelScratch.js
-     * 
-     * JogWheelScratch.js 
-     * 
+     *     * 
      * Goals:
      *  - Extremely fine scrubbing (no big jumps when paused).
      *  - Less forward drift when rocking back & forth in scratch mode.
@@ -1328,26 +1327,25 @@ MC2000.Deck = function(group) {
     };
     this.loadTrackBtn.unshift();
 
-    // Track Gain: pregain/track gain knob
-    this.trackGain = new components.Pot({ group: group, inKey: "pregain" });
+    // Track Gain: pregain/track gain knob or channel filter (alternate)
+    // Refactor: pregainAsFilter applies to pregain instead of mid EQ
+    if (!MC2000Config) { MC2000Config = {}; }
+    if (typeof MC2000Config.pregainAsFilter === 'undefined') {
+        MC2000Config.pregainAsFilter = false; // default off
+    }
+    if (MC2000Config.pregainAsFilter) {
+        // Alternate: use deck filter (QuickEffect super1) via the gain knob
+        this.trackGain = new components.Pot({ group: "[QuickEffectRack1_" + group + "]", inKey: "super1" });
+    } else {
+        this.trackGain = new components.Pot({ group: group, inKey: "pregain" });
+    }
 
     // Volume: channel volume fader
     this.volume = new components.Pot({ group: group, inKey: "volume" });
 
-    // EQ: high, mid, low knobs
+    // EQ: high, mid, low knobs (mid always EQ)
     this.eqHigh = new components.Pot({ group: "[EqualizerRack1_" + group + "_Effect1]", inKey: "parameter3" });
-    // Configurable: use mid knob as filter when enabled
-    if (!MC2000Config) { MC2000Config = {}; }
-    if (typeof MC2000Config.useMidEqAsFilter === 'undefined') {
-        MC2000Config.useMidEqAsFilter = false; // default off
-    }
-    if (MC2000Config.useMidEqAsFilter) {
-        // Map mid knob to channel filter (QuickEffect super1)
-        this.eqMid = new components.Pot({ group: "[QuickEffectRack1_" + group + "]", inKey: "super1" });
-    } else {
-        // Default: mid EQ parameter
-        this.eqMid = new components.Pot({ group: "[EqualizerRack1_" + group + "_Effect1]", inKey: "parameter2" });
-    }
+    this.eqMid = new components.Pot({ group: "[EqualizerRack1_" + group + "_Effect1]", inKey: "parameter2" });
     this.eqLow = new components.Pot({ group: "[EqualizerRack1_" + group + "_Effect1]", inKey: "parameter1" });
 
     // Pitch: simple pot to rate parameter (expects 0..1); wrappers convert CC value
@@ -1531,12 +1529,34 @@ MC2000.Deck = function(group) {
             engine.setValue(group, "loop_in", 1);
         }
     };
+    // Shift: short-press = goto loop-in; long-press = clear loop
+    this.loopInBtn.longPressTimer = 0;
+    this.loopInBtn.longPressCancelled = false;
+    this.loopInBtn.longPressThreshold = 600;
     this.loopInBtn.shiftedInput = function(_ch,_ctrl,value,_status,group){
-        if (!this.isPress(_ch, _ctrl, value, _status)) return;
-        // Shift: Jump to loop in point (if loop exists)
-        var loopStart = engine.getValue(group, "loop_start_position");
-        if (loopStart !== -1) {
-            engine.setValue(group, "loop_in_goto", 1);
+        if (this.isPress(_ch, _ctrl, value, _status)) {
+            var btnSelf = this;
+            // Start long-press detection
+            this.longPressTimer = engine.beginTimer(this.longPressThreshold, function(){
+                // Long press: clear the loop (both markers)
+                engine.setValue(group, "loop_remove", 1);
+                btnSelf.longPressTimer = 0;
+                btnSelf.longPressCancelled = false;
+                if (MC2000.debugMode) MC2000.debugLog(group + " loop_in SHIFT long-press: loop cleared");
+            }, true);
+            if (MC2000.debugMode) MC2000.debugLog("loopIn.longPress: started timer " + this.longPressTimer + " for " + group);
+        } else {
+            // Button released
+            if (this.longPressTimer !== 0) {
+                // Short press detected: cancel long-press and goto loop-in
+                this.longPressCancelled = true;
+                if (MC2000.debugMode) MC2000.debugLog("loopIn.longPress: cancelled timer " + this.longPressTimer + " for " + group);
+                this.longPressTimer = 0;
+                var loopStart = engine.getValue(group, "loop_start_position");
+                if (loopStart !== -1) {
+                    engine.setValue(group, "loop_in_goto", 1);
+                }
+            }
         }
     };
     this.loopInBtn.unshift = function() {
@@ -1564,12 +1584,30 @@ MC2000.Deck = function(group) {
         // Normal: Set loop out point
         engine.setValue(group, "loop_out", 1);
     };
+    // Shift: short-press = goto loop-out; long-press = clear loop
+    this.loopOutBtn.longPressTimer = 0;
+    this.loopOutBtn.longPressCancelled = false;
+    this.loopOutBtn.longPressThreshold = 600;
     this.loopOutBtn.shiftedInput = function(_ch,_ctrl,value,_status,group){
-        if (!this.isPress(_ch, _ctrl, value, _status)) return;
-        // Shift: Jump to loop out point (if loop exists)
-        var loopEnd = engine.getValue(group, "loop_end_position");
-        if (loopEnd !== -1) {
-            engine.setValue(group, "loop_out_goto", 1);
+        if (this.isPress(_ch, _ctrl, value, _status)) {
+            var btnSelf = this;
+            this.longPressTimer = engine.beginTimer(this.longPressThreshold, function(){
+                engine.setValue(group, "loop_remove", 1);
+                btnSelf.longPressTimer = 0;
+                btnSelf.longPressCancelled = false;
+                if (MC2000.debugMode) MC2000.debugLog(group + " loop_out SHIFT long-press: loop cleared");
+            }, true);
+            if (MC2000.debugMode) MC2000.debugLog("loopOut.longPress: started timer " + this.longPressTimer + " for " + group);
+        } else {
+            if (this.longPressTimer !== 0) {
+                this.longPressCancelled = true;
+                if (MC2000.debugMode) MC2000.debugLog("loopOut.longPress: cancelled timer " + this.longPressTimer + " for " + group);
+                this.longPressTimer = 0;
+                var loopEnd = engine.getValue(group, "loop_end_position");
+                if (loopEnd !== -1) {
+                    engine.setValue(group, "loop_out_goto", 1);
+                }
+            }
         }
     };
     this.loopOutBtn.unshift = function() {
@@ -1638,27 +1676,20 @@ MC2000.Deck = function(group) {
     });
     this.reloopExitBtn.normalInput = function(_ch,_ctrl,value,_status,group){
         if (!this.isPress(_ch, _ctrl, value, _status)) return;
-        var loopStart = engine.getValue(group, "loop_start_position");
-        
-        if (loopStart !== -1) {
-            // Loop exists: toggle it (reloop/exit)
+        var isPlaying = engine.getValue(group, "play") === 1;
+        var loopEnabled = engine.getValue(group, "loop_enabled") === 1;
+        if (isPlaying && loopEnabled) {
+            // Exit the active loop while playing
             engine.setValue(group, "reloop_toggle", 1);
-        } else {
-            // No loop: create 4-beat loop
-            engine.setValue(group, "beatloop_4_activate", 1);
+            return;
         }
+        // Start autoloop using Mixxx's configured beatloop size
+        engine.setValue(group, "beatloop_activate", 1);
     };
     this.reloopExitBtn.shiftedInput = function(_ch,_ctrl,value,_status,group){
         if (!this.isPress(_ch, _ctrl, value, _status)) return;
-        var loopStart = engine.getValue(group, "loop_start_position");
-        
-        if (loopStart !== -1) {
-            // Loop exists: toggle it (reloop/exit)
-            engine.setValue(group, "reloop_toggle", 1);
-        } else {
-            // No loop: create 8-beat loop
-            engine.setValue(group, "beatloop_8_activate", 1);
-        }
+        // Shifted: explicitly reloop/exit regardless of play state
+        engine.setValue(group, "reloop_toggle", 1);
     };
     this.reloopExitBtn.unshift = function() {
         this.input = this.normalInput;
