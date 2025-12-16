@@ -45,7 +45,7 @@
 var MC2000Config = {
     useAltPitchBend: true, // If true, use alt <SHIFT> pitchbend buttons with jump 32 behavior. False is fwd back and forward
     useAltPlayShift: false, // If true, use alternate play shift method (reverse roll)
-    useMidEqAsFilter: false, // If true, use mid EQ knob as filter when shift is held
+    pregainAsFilter: true, // If true, use pregain knob as filter 
     setVolumeToSafeDefault: true, // If true, set mixer and master volumes to safe default levels on init
     // Add more options as needed 
     //and write code to implement
@@ -531,6 +531,11 @@ MC2000.updateShiftState = function() {
             if (f.applyShiftState) f.applyShiftState(effectiveShift);
         });
     }
+    // Apply to master controls that support shift
+    if (MC2000.crossfaderPot) {
+        if (effectiveShift && MC2000.crossfaderPot.shift) MC2000.crossfaderPot.shift();
+        else if (MC2000.crossfaderPot.unshift) MC2000.crossfaderPot.unshift();
+    }
     // Update shift lock LED: ON if locked, OFF if not
     MC2000.LedManager.reflect("shiftlock", MC2000.shiftLock);
 };
@@ -550,10 +555,334 @@ MC2000.buildMasterControls = function() {
     });
     
     // Crossfader
+    // Normal: controls master crossfader. Shift: smoothly blends BPM between decks.
     MC2000.crossfaderPot = new components.Pot({
         group: "[Master]",
         inKey: "crossfader"
     });
+    // Preserve normal input handler
+    MC2000.crossfaderPot.normalInput = MC2000.crossfaderPot.input;
+    // Glide state and helpers
+    MC2000.crossfaderPot._glideTimerId = null;
+    MC2000.crossfaderPot._glideTargets = { "[Channel1]": null, "[Channel2]": null };
+    MC2000.crossfaderPot._glideStepScale = 1; // boost near edges
+    MC2000.crossfaderPot._prevRateRange = { "[Channel1]": null, "[Channel2]": null };
+    MC2000.crossfaderPot._prevSync = { "[Channel1]": null, "[Channel2]": null };
+    MC2000.crossfaderPot._autoRestoreSyncMaster = true; // auto re-enable sync on dominant deck after session
+    MC2000.crossfaderPot._syncForcedBlink = { "[Channel1]": false, "[Channel2]": false };
+    MC2000.crossfaderPot._glideUseSync = false;
+    MC2000.crossfaderPot._leaderGroup = null;
+    MC2000.crossfaderPot._followerGroup = null;
+    // Shared target BPM smoothing so both decks stay equal during transition
+    MC2000.crossfaderPot._xfTargetBpm = null;        // instantaneous target from crossfader position
+    MC2000.crossfaderPot._sessionTargetBpm = null;   // smoothed target applied to both decks
+    MC2000.crossfaderPot._glideAlphaBase = 0.2;      // smoothing factor per tick
+    // Crossfader BPM-blend session state (frozen snapshot for ~2s of activity)
+    MC2000.crossfaderPot._sessionActive = false;
+    MC2000.crossfaderPot._sessionTimerId = null;
+    MC2000.crossfaderPot._sessionBpm = { "[Channel1]": null, "[Channel2]": null };
+    MC2000.crossfaderPot._sessionBase = { "[Channel1]": null, "[Channel2]": null };
+    MC2000.crossfaderPot._lastXfValue = null;
+    MC2000.crossfaderPot._resetSession = function(){
+        var self = MC2000.crossfaderPot;
+        if (self._sessionTimerId !== null) {
+            engine.stopTimer(self._sessionTimerId);
+            self._sessionTimerId = null;
+        }
+        var g1 = "[Channel1]", g2 = "[Channel2]";
+        var prevSync1 = self._prevSync[g1];
+        var prevSync2 = self._prevSync[g2];
+        // Restore sync lock states if we changed them during session
+        [g1, g2] .forEach(function(g){
+            var prevSync = self._prevSync[g];
+            if (prevSync !== null && prevSync !== undefined) {
+                engine.setValue(g, "sync_enabled", prevSync);
+                MC2000.debugLog("Crossfader session: restored sync_enabled=" + prevSync + " for " + g);
+                self._prevSync[g] = null;
+            }
+        });
+        // Clear any temporary master state
+        engine.setValue(g1, "sync_master", 0);
+        engine.setValue(g2, "sync_master", 0);
+        // Optionally auto re-enable sync on the dominant deck as master when both were off
+        if (self._autoRestoreSyncMaster) {
+            var lastVal = self._lastXfValue;
+            var dominant = (lastVal !== null && lastVal >= 64) ? g2 : g1;
+            var follower = (dominant === g1) ? g2 : g1;
+            if ((prevSync1 !== 1) && (prevSync2 !== 1)) {
+                engine.setValue(dominant, "sync_master", 1);
+                engine.setValue(dominant, "sync_enabled", 1);
+                engine.setValue(follower, "sync_enabled", 0);
+                MC2000.debugLog("Crossfader session: auto-enabled sync on " + dominant + " (master) and kept " + follower + " sync off");
+            }
+        }
+        self._sessionActive = false;
+        self._sessionBpm["[Channel1]"] = null; self._sessionBpm["[Channel2]"] = null;
+        self._sessionBase["[Channel1]"] = null; self._sessionBase["[Channel2]"] = null;
+        self._sessionTargetBpm = null;
+        self._xfTargetBpm = null;
+        self._lastXfValue = null;
+        self._syncForcedBlink["[Channel1]"] = false; self._syncForcedBlink["[Channel2]"] = false;
+        self._glideUseSync = false; self._leaderGroup = null; self._followerGroup = null;
+    };
+    MC2000.crossfaderPot._scheduleInactivity = function(){
+        var self = MC2000.crossfaderPot;
+        if (self._sessionTimerId !== null) {
+            engine.stopTimer(self._sessionTimerId);
+            self._sessionTimerId = null;
+        }
+        self._sessionTimerId = engine.beginTimer(2000, function(){
+            // No movement for 2s; drop snapshot so next move re-initializes
+            self._resetSession();
+        });
+    };
+    MC2000.crossfaderPot._ensureSession = function(currentValue){
+        var self = MC2000.crossfaderPot;
+        var g1 = "[Channel1]", g2 = "[Channel2]";
+        if (!self._sessionActive) {
+            var bpm1 = engine.getValue(g1, "bpm");
+            var bpm2 = engine.getValue(g2, "bpm");
+            var rate1 = engine.getValue(g1, "rate");
+            var rate2 = engine.getValue(g2, "rate");
+            if (!bpm1 || !bpm2) {
+                return false;
+            }
+            // Base BPMs with Mixxx semantics: current = base * (1 - rate)
+            var base1 = bpm1 / (1 - rate1);
+            var base2 = bpm2 / (1 - rate2);
+            self._sessionBpm[g1] = bpm1; self._sessionBpm[g2] = bpm2;
+            self._sessionBase[g1] = base1; self._sessionBase[g2] = base2;
+            self._sessionActive = true;
+            self._lastXfValue = currentValue;
+            // Disable sync lock during BPM glide to ensure rates can change freely.
+            [g1, g2].forEach(function(g){
+                var curSync = engine.getValue(g, "sync_enabled");
+                self._prevSync[g] = curSync;
+                if (curSync === 1) {
+                    engine.setValue(g, "sync_enabled", 0);
+                    MC2000.debugLog("Crossfader session: disabled sync_enabled for " + g + " (was 1)");
+                    // Blink the deck's sync LED to indicate we forced it off
+                    var deckNum = (g === "[Channel1]") ? 1 : 2;
+                    MC2000.LedManager.blinkAndRestore("sync", 250, 4, {deck: deckNum});
+                    self._syncForcedBlink[g] = true;
+                }
+            });
+            self._scheduleInactivity();
+            MC2000.debugLog("Crossfader session: snapshot bpm1=" + bpm1.toFixed(2) + ", bpm2=" + bpm2.toFixed(2));
+            return true;
+        } else {
+            if (currentValue !== self._lastXfValue) {
+                self._lastXfValue = currentValue;
+                self._scheduleInactivity();
+            }
+            return true;
+        }
+    };
+    MC2000.crossfaderPot._startGlide = function() {
+        var self = MC2000.crossfaderPot;
+        MC2000.debugLog("Starting crossfader glide timer");
+        if (self._glideTimerId !== null) return;
+        MC2000.debugLog("Crossfader glide: targetBpm=" + self._xfTargetBpm.toFixed(2));
+        self._glideTimerId = engine.beginTimer(50, function(){
+            var g1 = "[Channel1]", g2 = "[Channel2]";
+            if (!self._sessionActive) {
+                engine.stopTimer(self._glideTimerId);
+                self._glideTimerId = null;
+                return;
+            }
+            if (self._xfTargetBpm === null) return;
+            if (self._sessionTargetBpm === null) self._sessionTargetBpm = self._xfTargetBpm;
+            var alpha = (self._glideAlphaBase || 0.2) * (self._glideStepScale || 1);
+            alpha = Math.max(0.01, Math.min(1.0, alpha));
+            var xfTarget = self._xfTargetBpm;
+            var sessBefore = self._sessionTargetBpm;
+            self._sessionTargetBpm = self._sessionTargetBpm + alpha * (self._xfTargetBpm - self._sessionTargetBpm);
+            var sessAfter = self._sessionTargetBpm;
+            var base1 = self._sessionBase[g1];
+            var base2 = self._sessionBase[g2];
+            if (!base1 || !base2) return;
+            // If using sync-follow, keep leader as master and follower sync-enabled
+            if (self._glideUseSync && self._leaderGroup && self._followerGroup) {
+                engine.setValue(self._leaderGroup, "sync_master", 1);
+                engine.setValue(self._leaderGroup, "sync_enabled", 1);
+                engine.setValue(self._followerGroup, "sync_enabled", 1);
+            }
+            // Mixxx semantics: current = base * (1 - rate)
+            var rawRate1 = 1 - (self._sessionTargetBpm / base1);
+            var rawRate2 = 1 - (self._sessionTargetBpm / base2);
+            var curRange1 = engine.getValue(g1, "rateRange") || 0;
+            var curRange2 = engine.getValue(g2, "rateRange") || 0;
+            var widened1From = null, widened2From = null;
+            if (Math.abs(rawRate1) > curRange1) { widened1From = curRange1; engine.setValue(g1, "rateRange", Math.max(curRange1, 0.80)); }
+            if (Math.abs(rawRate2) > curRange2) { widened2From = curRange2; engine.setValue(g2, "rateRange", Math.max(curRange2, 0.80)); }
+            var maxRate1 = engine.getValue(g1, "rateRange") || 0;
+            var maxRate2 = engine.getValue(g2, "rateRange") || 0;
+            var setRate1 = Math.max(-maxRate1, Math.min(maxRate1, rawRate1));
+            var setRate2 = Math.max(-maxRate2, Math.min(maxRate2, rawRate2));
+            if (self._glideUseSync && self._leaderGroup && self._followerGroup) {
+                var setLeader = (self._leaderGroup === g1) ? setRate1 : setRate2;
+                engine.setValue(self._leaderGroup, "rate", setLeader);
+            } else {
+                engine.setValue(g1, "rate", setRate1);
+                engine.setValue(g2, "rate", setRate2);
+            }
+            var rate1After = engine.getValue(g1, "rate");
+            var rate2After = engine.getValue(g2, "rate");
+            // Guardrail: if something overrode our rate, re-apply once per tick
+            if ((!self._glideUseSync || self._leaderGroup === g1) && Math.abs(rate1After - setRate1) > 0.02) {
+                MC2000.debugLog("Crossfader glide: guardrail re-applying rate for " + g1 + ", had=" + rate1After.toFixed(4) + ", want=" + setRate1.toFixed(4));
+                engine.setValue(g1, "rate", setRate1);
+                rate1After = engine.getValue(g1, "rate");
+            }
+            if ((!self._glideUseSync || self._leaderGroup === g2) && Math.abs(rate2After - setRate2) > 0.02) {
+                MC2000.debugLog("Crossfader glide: guardrail re-applying rate for " + g2 + ", had=" + rate2After.toFixed(4) + ", want=" + setRate2.toFixed(4));
+                engine.setValue(g2, "rate", setRate2);
+                rate2After = engine.getValue(g2, "rate");
+            }
+            var predBpm1 = base1 * (1 - rate1After);
+            var predBpm2 = base2 * (1 - rate2After);
+            var actBpm1 = engine.getValue(g1, "bpm");
+            var actBpm2 = engine.getValue(g2, "bpm");
+            var sync1 = engine.getValue(g1, "sync_enabled");
+            var sync2 = engine.getValue(g2, "sync_enabled");
+            MC2000.debugLog(
+                "Crossfader glide: xfTarget=" + xfTarget.toFixed(2) +
+                ", sessBefore=" + sessBefore.toFixed(2) +
+                ", sessAfter=" + sessAfter.toFixed(2) +
+                ", alpha=" + alpha.toFixed(3) +
+                ", base=[" + base1.toFixed(2) + "," + base2.toFixed(2) + "]" +
+                ", rawRate=[" + rawRate1.toFixed(4) + "," + rawRate2.toFixed(4) + "]" +
+                ", range=[" + (widened1From !== null ? (widened1From.toFixed(2) + "->" + maxRate1.toFixed(2)) : (curRange1.toFixed(2) + "->" + maxRate1.toFixed(2))) +
+                "," + (widened2From !== null ? (widened2From.toFixed(2) + "->" + maxRate2.toFixed(2)) : (curRange2.toFixed(2) + "->" + maxRate2.toFixed(2))) + "]" +
+                ", setRate=[" + setRate1.toFixed(4) + "," + setRate2.toFixed(4) + "]" +
+                ", rateAfter=[" + rate1After.toFixed(4) + "," + rate2After.toFixed(4) + "]" +
+                ", predBpm=[" + predBpm1.toFixed(2) + "," + predBpm2.toFixed(2) + "]" +
+                ", actBpm=[" + (actBpm1 ? actBpm1.toFixed(2) : "n/a") + "," + (actBpm2 ? actBpm2.toFixed(2) : "n/a") + "]" +
+                ", sync=[" + sync1 + "," + sync2 + "]"
+            );
+        });
+    };
+    MC2000.crossfaderPot._stopGlide = function(){
+        var self = MC2000.crossfaderPot;
+        if (self._glideTimerId !== null) {
+            engine.stopTimer(self._glideTimerId);
+            self._glideTimerId = null;
+        }
+        self._glideTargets["[Channel1]"] = null;
+        self._glideTargets["[Channel2]"] = null;
+        self._glideStepScale = 1;
+        // Restore previous rate ranges if we widened them
+        ["[Channel1]", "[Channel2]"] .forEach(function(g){
+            var prev = self._prevRateRange[g];
+            if (prev !== null && prev !== undefined) {
+                engine.setValue(g, "rateRange", prev);
+                self._prevRateRange[g] = null;
+            }
+        });
+    };
+    // Shifted input: continuously blend BPMs using a frozen 2s snapshot
+    MC2000.crossfaderPot.shiftedInput = function(channel, control, value, status, group) {
+        var p = Math.max(0, Math.min(1, value / 127)); // [0,1]
+        var g1 = "[Channel1]";
+        var g2 = "[Channel2]";
+        // Initialize or keep a session snapshot for ~2s of activity
+        if (!MC2000.crossfaderPot._ensureSession(value)) {
+            // If BPM unknown, fall back to normal crossfader behavior
+            MC2000.crossfaderPot.normalInput(channel, control, value, status, group);
+            MC2000.debugLog("Crossfader BPM match: unknown BPM(s), using normal crossfader");
+            return;
+        }
+        // Use frozen snapshot BPMs/bases during the active session
+        var bpm1 = MC2000.crossfaderPot._sessionBpm[g1];
+        var bpm2 = MC2000.crossfaderPot._sessionBpm[g2];
+        var base1 = MC2000.crossfaderPot._sessionBase[g1];
+        var base2 = MC2000.crossfaderPot._sessionBase[g2];
+        // Compute shared target BPM from crossfader position (midpoint = average)
+        var targetBpm = (1 - p) * bpm1 + p * bpm2;
+        MC2000.debugLog("Crossfader BPM match: p=" + p.toFixed(3) + ", targetBpm=" + targetBpm.toFixed(3));
+        // Store instantaneous target BPM for the glide loop so both decks stay equal
+        MC2000.crossfaderPot._xfTargetBpm = targetBpm;
+        // Clip by rate ranges; temporarily widen if needed while shifted
+        var curRange1 = engine.getValue(g1, "rateRange") || 0;
+        var curRange2 = engine.getValue(g2, "rateRange") || 0;
+        MC2000.debugLog("Crossfader BPM match: base1=" + base1.toFixed(2) + ", base2=" + base2.toFixed(2) + ", bpm1=" + bpm1.toFixed(2) + ", bpm2=" + bpm2.toFixed(2));
+        // Estimate desired rates for range check and immediate lock
+            var estRate1 = 1 - (targetBpm / base1);
+            var estRate2 = 1 - (targetBpm / base2);
+        MC2000.debugLog("Crossfader BPM match: estRate1=" + estRate1.toFixed(5) + ", estRate2=" + estRate2.toFixed(5));
+        // If current range too small for required change, widen to 0.80 (±80%) and remember previous
+        [ [g1, curRange1, estRate1], [g2, curRange2, estRate2] ].forEach(function(item){
+            var grp = item[0], cur = item[1], desired = item[2];
+            if (Math.abs(desired) > cur) {
+                if (MC2000.crossfaderPot._prevRateRange[grp] === null) {
+                    MC2000.crossfaderPot._prevRateRange[grp] = cur;
+                }
+                engine.setValue(grp, "rateRange", Math.max(cur, 0.80));
+                MC2000.debugLog("Crossfader BPM match: widened " + grp + " rateRange from " + (cur*100).toFixed(1) + "% to " + (engine.getValue(grp, "rateRange")*100).toFixed(1) + "%");
+            }
+        })
+        // Immediately lock BPMs only on the first movement of the session
+        if (MC2000.crossfaderPot._sessionTargetBpm === null) {
+            var maxRate1Now = engine.getValue(g1, "rateRange") || 0;
+            var maxRate2Now = engine.getValue(g2, "rateRange") || 0;
+            var lockRate1 = Math.max(-maxRate1Now, Math.min(maxRate1Now, estRate1));
+            var lockRate2 = Math.max(-maxRate2Now, Math.min(maxRate2Now, estRate2));
+            MC2000.debugLog("Crossfader BPM match: locking rates immediately: rate1=" + lockRate1.toFixed(4) + " (max " + maxRate1Now.toFixed(2) + "), rate2=" + lockRate2.toFixed(4) + " (max " + maxRate2Now.toFixed(2) + ")");
+            engine.setValue(g1, "rate", lockRate1);
+            engine.setValue(g2, "rate", lockRate2);
+                var r1After = engine.getValue(g1, "rate");
+                var r2After = engine.getValue(g2, "rate");
+                // Guardrail on snap: re-apply if overridden
+                if (Math.abs(r1After - lockRate1) > 0.02) {
+                    MC2000.debugLog("Crossfader BPM match: guardrail snap re-apply for " + g1 + ", had=" + r1After.toFixed(5) + ", want=" + lockRate1.toFixed(5));
+                    engine.setValue(g1, "rate", lockRate1);
+                    r1After = engine.getValue(g1, "rate");
+                }
+                if (Math.abs(r2After - lockRate2) > 0.02) {
+                    MC2000.debugLog("Crossfader BPM match: guardrail snap re-apply for " + g2 + ", had=" + r2After.toFixed(5) + ", want=" + lockRate2.toFixed(5));
+                    engine.setValue(g2, "rate", lockRate2);
+                    r2After = engine.getValue(g2, "rate");
+                }
+                var predBpm1 = base1 * (1 - r1After);
+                var predBpm2 = base2 * (1 - r2After);
+                MC2000.debugLog("Crossfader BPM match: snap set rate -> actual: [" + r1After.toFixed(5) + ", " + r2After.toFixed(5) + "] predBpm=[" + predBpm1.toFixed(2) + ", " + predBpm2.toFixed(2) + "] target=" + targetBpm.toFixed(2));
+            // Seed session smoothed target with the instantaneous target for zero lag
+            MC2000.crossfaderPot._sessionTargetBpm = targetBpm;
+
+            // One-shot phase sync so beats are aligned (tempo is already matched).
+            var dominant = (p >= 0.5) ? g2 : g1;
+            var follower = (dominant === g1) ? g2 : g1;
+            engine.setValue(dominant, "sync_master", 1);
+            engine.setValue(follower, "beatsync", 1);
+            engine.setValue(dominant, "sync_master", 0);
+            MC2000.debugLog("Crossfader BPM match: phase-synced " + follower + " to master " + dominant);
+            // Enable sync-follow mode for robust incoming deck tempo control
+            MC2000.crossfaderPot._leaderGroup = dominant;
+            MC2000.crossfaderPot._followerGroup = follower;
+            MC2000.crossfaderPot._glideUseSync = true;
+            engine.setValue(dominant, "sync_master", 1);
+            engine.setValue(dominant, "sync_enabled", 1);
+            engine.setValue(follower, "sync_enabled", 1);
+            MC2000.debugLog("Crossfader BPM match: glide leader=" + dominant + " (master), follower=" + follower + " (sync on)");
+        }
+        MC2000.debugLog("Crossfader BPM match: targetBpm=" + targetBpm.toFixed(2));
+        // Boost glide near edges so incoming deck locks faster
+        MC2000.crossfaderPot._glideStepScale = (p < 0.2 || p > 0.8) ? 3 : 1;
+        
+        // Ensure glide runs if needed
+        MC2000.crossfaderPot._startGlide();
+        // Also move audio crossfader
+        MC2000.crossfaderPot.normalInput(channel, control, value, status, group);
+    };
+    // Wire shift/unshift behavior for crossfader
+    MC2000.crossfaderPot.unshift = function() { this.input = this.normalInput; MC2000.crossfaderPot._stopGlide(); MC2000.crossfaderPot._resetSession(); };
+    MC2000.crossfaderPot.shift = function() { this.input = this.shiftedInput; };
+    // Apply initial state
+    if (MC2000.isShiftActive()) {
+        MC2000.crossfaderPot.shift();
+    } else {
+        MC2000.crossfaderPot.unshift();
+    }
     
     // Headphone volume
     MC2000.headphoneVolumePot = new components.Pot({
@@ -1350,6 +1679,17 @@ MC2000.Deck = function(group) {
 
     // Pitch: simple pot to rate parameter (expects 0..1); wrappers convert CC value
     this.rate = new components.Pot({ group: group, inKey: "rate" });
+    // During crossfader BPM-glide sessions, ignore hardware pitch fader to avoid conflicts
+    if (!this.rate._rawInput) {
+        this.rate._rawInput = this.rate.input;
+        this.rate.input = function(channel, control, value, status, grp) {
+            if (MC2000.crossfaderPot && MC2000.crossfaderPot._sessionActive) {
+                if (MC2000.debugMode) MC2000.debugLog("Pitch fader input ignored during BPM glide for " + grp + ": value=" + value);
+                return;
+            }
+            return this._rawInput.apply(this, arguments);
+        };
+    }
 
     // Pitch Bend buttons: temporary pitch up/down
     this.pitchBendUpBtn = new components.Button({
