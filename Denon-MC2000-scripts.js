@@ -47,6 +47,11 @@ var MC2000Config = {
     useAltPlayShift: false, // If true, use alternate play shift method (reverse roll)
     pregainAsFilter: true, // If true, use pregain knob as filter 
     setVolumeToSafeDefault: true, // If true, set mixer and master volumes to safe default levels on init
+    // If true, on shift+crossfader start perform an immediate beatsync before ramp.
+    // This snaps tempos instantly, then the leader will glide to target over 2s; default true per desired UX.
+    crossfaderShiftOneShotSync: true,
+    // If true, keep sync leader enabled after ramp completes; default false (restore normal operation).
+    crossfaderShiftKeepSync: true,
     // Add more options as needed 
     //and write code to implement
     // e.g., enableFxUnits: false,
@@ -570,75 +575,178 @@ MC2000.buildMasterControls = function() {
     MC2000.crossfaderPot._shiftBase = {"[Channel1]": null, "[Channel2]": null};
     MC2000.crossfaderPot._shiftActive = false;
     MC2000.crossfaderPot._shiftSynced = false; // ensure beatsync is one-shot per shift session
-    MC2000.crossfaderPot._stopShiftTimer = function(){
+    MC2000.crossfaderPot._shiftLeaderGroup = null;
+    MC2000.crossfaderPot._shiftFollowerGroup = null;
+    MC2000.crossfaderPot._shiftLeaderBase = null;
+    MC2000.crossfaderPot._shiftHoldMs = 800; // time to keep enforcing final target after ramp completes
+    MC2000.crossfaderPot._shiftHoldUntilMs = 0;
+    // Snapshot of starting rates for a clean interpolation
+    MC2000.crossfaderPot._shiftStartLeaderRate = null;
+    MC2000.crossfaderPot._shiftStartFollowerRate = null;
+    MC2000.crossfaderPot._stopShiftTimer = function(opts){
+        // Optionally stop only the timer while keeping session state intact for restarts
+        var preserveSession = opts && opts.preserveSession;
+        var preserveSync = opts && opts.preserveSync;
         if (MC2000.crossfaderPot._shiftTimerId !== null) {
             engine.stopTimer(MC2000.crossfaderPot._shiftTimerId);
+            if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: stopped timer id=" + MC2000.crossfaderPot._shiftTimerId);
             MC2000.crossfaderPot._shiftTimerId = null;
         }
+        if (preserveSession) return;
         MC2000.crossfaderPot._shiftActive = false;
         MC2000.crossfaderPot._shiftTargetBpm = null;
         MC2000.crossfaderPot._shiftBase["[Channel1]"] = null;
         MC2000.crossfaderPot._shiftBase["[Channel2]"] = null;
-        MC2000.crossfaderPot._shiftSynced = false;
+        if (!preserveSync) MC2000.crossfaderPot._shiftSynced = false;
+        if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: session cleared (preserveSync=" + !!preserveSync + ")");
+        MC2000.crossfaderPot._shiftHoldUntilMs = 0;
     };
     MC2000.crossfaderPot.shiftedInput = function(channel, control, value, status, group) {
         // Always move audio crossfader
         MC2000.crossfaderPot.normalInput(channel, control, value, status, group);
+        // Do not restart ramp on each MIDI tick; only start if no active session
+        if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: shiftedInput value=" + value + " (0-127)");
+        // If we are in post-ramp hold, ignore new sessions
+        if (MC2000.crossfaderPot._shiftHoldUntilMs && Date.now() < MC2000.crossfaderPot._shiftHoldUntilMs) {
+            if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: in post-ramp hold; ignoring new session start");
+            return;
+        }
         // Compute deck roles based on position
         var p = Math.max(0, Math.min(1, value / 127));
         var g1 = "[Channel1]", g2 = "[Channel2]";
         var outgoing = (p < 0.5) ? g1 : g2;
         var incoming = (outgoing === g1) ? g2 : g1;
-        // On first call of a shift session or when not active, snapshot and start
+        if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: p=" + p.toFixed(3) + ", outgoing=" + outgoing + ", incoming=" + incoming);
+        // On first call of a shift session, snapshot and start
+        if (MC2000.crossfaderPot._shiftActive) {
+            // Keep current ramp running; optionally handle side switch if crossing midpoint
+            if (MC2000.crossfaderPot._shiftLeaderGroup && MC2000.crossfaderPot._shiftLeaderGroup !== outgoing) {
+                if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: leader side changed mid-ramp; keeping original leader " + MC2000.crossfaderPot._shiftLeaderGroup);
+            }
+            return;
+        }
         var bpm1 = engine.getValue(g1, "bpm");
         var bpm2 = engine.getValue(g2, "bpm");
-        if (!bpm1 || !bpm2) return;
+        if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: bpm1=" + bpm1 + ", bpm2=" + bpm2);
+        if (!bpm1 || !bpm2) {
+            if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: aborting ramp, missing BPM (bpm1 or bpm2 is 0/undefined)");
+            return;
+        }
         var rate1 = engine.getValue(g1, "rate");
         var rate2 = engine.getValue(g2, "rate");
-        var base1 = bpm1 / (1 - rate1);
-        var base2 = bpm2 / (1 - rate2);
-        // One-time beatsync: make incoming match outgoing immediately
-        if (!MC2000.crossfaderPot._shiftSynced) {
-            engine.setValue(outgoing, "sync_master", 1);
-            engine.setValue(incoming, "beatsync", 1);
-            engine.setValue(outgoing, "sync_master", 0);
-            MC2000.crossfaderPot._shiftSynced = true;
-        }
-        // Target BPM for 2s ramp = initial incoming BPM
+        var denom1 = (1 - rate1);
+        var denom2 = (1 - rate2);
+        var base1 = bpm1 / (denom1 === 0 ? 1 : denom1);
+        var base2 = bpm2 / (denom2 === 0 ? 1 : denom2);
+        if (MC2000.debugMode) MC2000.debugLog(
+            "CrossfaderShift: rate1=" + rate1.toFixed(4) + " rate2=" + rate2.toFixed(4) +
+            ", base1=" + base1.toFixed(4) + " base2=" + base2.toFixed(4)
+        );
+        // Snapshot target BEFORE any sync: target BPM is the incoming deck's PRE-SYNC BPM
         var targetBpm = (incoming === g1) ? bpm1 : bpm2;
+        // Snapshot start rates (pre-sync) for interpolation
+        var startLeaderRateSnap = (outgoing === g1) ? rate1 : rate2;
+        var startFollowerRateSnap = (incoming === g1) ? rate1 : rate2;
+        MC2000.crossfaderPot._shiftStartLeaderRate = startLeaderRateSnap;
+        MC2000.crossfaderPot._shiftStartFollowerRate = startFollowerRateSnap;
+
+        // Optional one-shot PHASE-ONLY sync: avoid instant tempo jump
+        if (!MC2000.crossfaderPot._shiftSynced && MC2000Config.crossfaderShiftOneShotSync) {
+            if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: performing phase-only sync (no tempo snap) outgoing=" + outgoing + ", incoming=" + incoming + ", targetBpm=" + targetBpm);
+            // Trigger beatsync to align phase, then immediately restore pre-sync rates
+            engine.setValue(incoming, "beatsync", 1);
+            // Restore original rates to prevent tempo jump
+            engine.setValue(outgoing, "rate", startLeaderRateSnap);
+            engine.setValue(incoming, "rate", startFollowerRateSnap);
+            MC2000.crossfaderPot._shiftSynced = true;
+            if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: phase-only sync complete (rates restored; ramp will glide tempo)");
+        }
         MC2000.crossfaderPot._shiftTargetBpm = targetBpm;
         MC2000.crossfaderPot._shiftBase[g1] = base1;
         MC2000.crossfaderPot._shiftBase[g2] = base2;
+        MC2000.crossfaderPot._shiftLeaderGroup = outgoing;
+        MC2000.crossfaderPot._shiftFollowerGroup = incoming;
+        MC2000.crossfaderPot._shiftLeaderBase = (outgoing === g1) ? base1 : base2;
         MC2000.crossfaderPot._shiftStartMs = Date.now();
         MC2000.crossfaderPot._shiftActive = true;
+        MC2000.crossfaderPot._shiftHoldUntilMs = 0; // clear any prior hold
+        if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: start ramp targetBpm=" + targetBpm.toFixed(4) + " durationMs=" + MC2000.crossfaderPot._shiftDurationMs);
         // Start or restart timer to ease both decks to target BPM over 2s
-        MC2000.crossfaderPot._stopShiftTimer();
         MC2000.crossfaderPot._shiftTimerId = engine.beginTimer(50, function(){
             var now = Date.now();
             var t = Math.min(1, (now - MC2000.crossfaderPot._shiftStartMs) / MC2000.crossfaderPot._shiftDurationMs);
             // Smooth ease (ease-in-out)
             var ease = t < 0.5 ? (2*t*t) : (1 - Math.pow(-2*t + 2, 2)/2);
             var target = MC2000.crossfaderPot._shiftTargetBpm;
-            var b1 = MC2000.crossfaderPot._shiftBase[g1];
-            var b2 = MC2000.crossfaderPot._shiftBase[g2];
-            if (!target || !b1 || !b2) return;
-            var desiredRate1 = 1 - (target / b1);
-            var desiredRate2 = 1 - (target / b2);
-            // Read current to interpolate
-            var curR1 = engine.getValue(g1, "rate");
-            var curR2 = engine.getValue(g2, "rate");
-            var newR1 = curR1 + (desiredRate1 - curR1) * ease;
-            var newR2 = curR2 + (desiredRate2 - curR2) * ease;
-            engine.setValue(g1, "rate", newR1);
-            engine.setValue(g2, "rate", newR2);
+            var leader = MC2000.crossfaderPot._shiftLeaderGroup;
+            var follower = MC2000.crossfaderPot._shiftFollowerGroup;
+            var bLeader = MC2000.crossfaderPot._shiftLeaderBase;
+            var bFollower = MC2000.crossfaderPot._shiftBase[follower];
+            if (!target || !bLeader || !bFollower) return;
+
+            var desiredLeaderRate = 1 - (target / bLeader);
+            var desiredFollowerRate = 1 - (target / bFollower);
+
+            // Interpolate from snapshot start rates for a stable 2s glide
+            var startLeaderRate = MC2000.crossfaderPot._shiftStartLeaderRate;
+            var startFollowerRate = MC2000.crossfaderPot._shiftStartFollowerRate;
+            var newLeaderRate = startLeaderRate + (desiredLeaderRate - startLeaderRate) * ease;
+            var newFollowerRate = startFollowerRate + (desiredFollowerRate - startFollowerRate) * ease;
+
+            if (MC2000.debugMode) MC2000.debugLog(
+                "CrossfaderShift: tick t=" + t.toFixed(3) + " ease=" + ease.toFixed(3) +
+                " target=" + target.toFixed(3) +
+                " | leader=" + leader + " start=" + startLeaderRate.toFixed(4) + " -> new=" + newLeaderRate.toFixed(4) + " (desired=" + desiredLeaderRate.toFixed(4) + ")" +
+                " | follower=" + follower + " start=" + startFollowerRate.toFixed(4) + " -> new=" + newFollowerRate.toFixed(4) + " (desired=" + desiredFollowerRate.toFixed(4) + ")"
+            );
+            engine.setValue(leader, "rate", newLeaderRate);
+            engine.setValue(follower, "rate", newFollowerRate);
             if (t >= 1) {
-                MC2000.crossfaderPot._stopShiftTimer();
+                // Ramp complete - enforce exact target and hold briefly to avoid drift
+                if (MC2000.crossfaderPot._shiftHoldUntilMs === 0) {
+                    if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: ramp complete");
+                    var finalLeaderRate = 1 - (target / bLeader);
+                    var finalFollowerRate = 1 - (target / bFollower);
+                    engine.setValue(leader, "rate", finalLeaderRate);
+                    engine.setValue(follower, "rate", finalFollowerRate);
+                    if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: snapped final rates leader=" + finalLeaderRate.toFixed(4) + ", follower=" + finalFollowerRate.toFixed(4));
+                    // If configured, now engage sync relationship at final tempo
+                    if (MC2000Config.crossfaderShiftKeepSync) {
+                        engine.setValue(leader, "sync_leader", 1);
+                        engine.setValue(follower, "sync_enabled", 1);
+                    }
+                    MC2000.crossfaderPot._shiftHoldUntilMs = now + MC2000.crossfaderPot._shiftHoldMs;
+                } else if (now < MC2000.crossfaderPot._shiftHoldUntilMs) {
+                    // Reassert final target during hold period
+                    var holdLeaderRate = 1 - (target / bLeader);
+                    var holdFollowerRate = 1 - (target / bFollower);
+                    engine.setValue(leader, "rate", holdLeaderRate);
+                    engine.setValue(follower, "rate", holdFollowerRate);
+                } else {
+                    // End hold, optionally clear leader depending on config
+                    if (!MC2000Config.crossfaderShiftKeepSync && MC2000.crossfaderPot._shiftSynced) {
+                        if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: clearing sync_leader after ramp hold");
+                        engine.setValue(leader, "sync_leader", 0);
+                    }
+                    MC2000.crossfaderPot._stopShiftTimer({preserveSync: true});
+                }
             }
         });
+        if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: timer started id=" + MC2000.crossfaderPot._shiftTimerId);
     };
     // Wire shift/unshift behavior for crossfader
-    MC2000.crossfaderPot.unshift = function() { this.input = this.normalInput; MC2000.crossfaderPot._stopShiftTimer(); };
-    MC2000.crossfaderPot.shift = function() { this.input = this.shiftedInput; };
+    MC2000.crossfaderPot.unshift = function() {
+        this.input = this.normalInput;
+        if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: UNSHIFT (restoring normal crossfader behavior)");
+        // If we don't want to keep sync after shift mode, clear it now
+        if (!MC2000Config.crossfaderShiftKeepSync && MC2000.crossfaderPot._shiftLeaderGroup) {
+            if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: clearing sync on unshift (leader and follower)");
+            engine.setValue(MC2000.crossfaderPot._shiftLeaderGroup, "sync_leader", 0);
+            if (MC2000.crossfaderPot._shiftFollowerGroup) engine.setValue(MC2000.crossfaderPot._shiftFollowerGroup, "sync_enabled", 0);
+        }
+        MC2000.crossfaderPot._stopShiftTimer();
+    };
+    MC2000.crossfaderPot.shift = function() { this.input = this.shiftedInput; if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: SHIFT (enabling BPM ramp mode)"); };
     // Apply initial state
     if (MC2000.isShiftActive()) {
         MC2000.crossfaderPot.shift();
