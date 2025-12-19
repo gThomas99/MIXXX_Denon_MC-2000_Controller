@@ -70,7 +70,11 @@ MC2000.jogResolution   = 125;         // ticks per revolution
 MC2000.jogRpm          = 33 +1/3;   // vinyl RPM force to float type
 MC2000.jogAlpha = 1.0/16;     // bigger inertia (less easy to keep spinning)
 MC2000.jogBeta  = (1.0/16)/64; // more damping (stops creeping)
-
+// Enable slip mode when scratching (jog wheel moves but track position stays)
+MC2000.jogEnableSlipOnScratch = false;
+// Pitch bend scaling for CDJ mode (outer wheel when not scratching)
+MC2000.jogPitchScale   = 1.0/4;      // scale for non-scratch jog (pitch bend)
+// MIDI center value for relative encoder
 // 3) If you truly want zero "fast spin" boost, keep MAX_SCALING=1.
 //    If you want a slight boost at quick spins, try 2 or 3.
 MC2000.jogMaxScaling   = 1.25;       // slight boost at quick spins
@@ -524,7 +528,7 @@ MC2000.updateShiftState = function() {
     if (MC2000.crossfaderPot) {
         if (effectiveShift && typeof MC2000.crossfaderPot.shift === 'function') {
             MC2000.crossfaderPot.shift();
-        } else if (typeof MC2000.crossfaderPot.unshift === 'function') {
+        } else if (!effectiveShift && typeof MC2000.crossfaderPot.unshift === 'function') {
             MC2000.crossfaderPot.unshift();
         }
     }
@@ -557,15 +561,24 @@ MC2000.buildMasterControls = function() {
     MC2000.crossfaderPot._playingDeck = null;
     MC2000.crossfaderPot._incomingDeck = null;
     MC2000.crossfaderPot._shiftActive = false;
+    MC2000.crossfaderPot._potMovedWhileShifted = false;
+    MC2000.crossfaderPot._lastCrossfaderValue = 0.5;
     
-    // SHIFT: sync incoming deck to playing deck
+    // SHIFT: prepare for sync activation on pot movement (but don't activate yet)
     MC2000.crossfaderPot.shift = function() {
+        if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: SHIFT pressed (waiting for pot movement)");
+        this._potMovedWhileShifted = false;
+        this._lastCrossfaderValue = engine.getValue("[Master]", "crossfader");
+    };
+    
+    // Activate sync on first pot movement while shifted
+    MC2000.crossfaderPot.activateSync = function() {
         // Only apply sync once per shift session
         if (this._shiftActive) {
             return;
         }
         
-        if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: SHIFT start (sync by crossfader position)");
+        if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: POT MOVED - activating sync by crossfader position");
         
         // Determine playing/incoming deck by crossfader position
         // Playing = deck closest to crossfader, Incoming = deck furthest from crossfader
@@ -630,6 +643,24 @@ MC2000.buildMasterControls = function() {
         this._playingDeck = null;
         this._incomingDeck = null;
         this._shiftActive = false;
+        this._potMovedWhileShifted = false;
+    };
+    
+    // Override input method to detect pot movement while shifted
+    var originalCrossfaderInput = MC2000.crossfaderPot.input;
+    MC2000.crossfaderPot.input = function(channel, control, value, status, group) {
+        // Check if shift is held and pot value has changed
+        var effectiveShift = MC2000.shiftHeld || MC2000.shiftLock;
+        var currentValue = engine.getValue("[Master]", "crossfader");
+        if (effectiveShift && !this._potMovedWhileShifted && currentValue !== this._lastCrossfaderValue) {
+            this._potMovedWhileShifted = true;
+            this.activateSync();
+            if (MC2000.debugMode) MC2000.debugLog("CrossfaderShift: detected pot movement while shifted");
+        }
+        this._lastCrossfaderValue = currentValue;
+        
+        // Call the original input method
+        originalCrossfaderInput.call(this, channel, control, value, status, group);
     };
     
     // Headphone volume
@@ -1425,15 +1456,8 @@ MC2000.Deck = function(group) {
     this.eqMid = new components.Pot({ group: "[EqualizerRack1_" + group + "_Effect1]", inKey: "parameter2" });
     this.eqLow = new components.Pot({ group: "[EqualizerRack1_" + group + "_Effect1]", inKey: "parameter1" });
 
-    // Pitch: simple pot to rate parameter (expects 0..1); wrappers convert CC value
+    // Pitch: simple pot to rate parameter
     this.rate = new components.Pot({ group: group, inKey: "rate" });
-    // Remove BPM-glide gating; pitch fader always active
-    if (!this.rate._rawInput) {
-        this.rate._rawInput = this.rate.input;
-        this.rate.input = function() {
-            return this._rawInput.apply(this, arguments);
-        };
-    }
 
     // Pitch Bend buttons: temporary pitch up/down
     this.pitchBendUpBtn = new components.Button({
