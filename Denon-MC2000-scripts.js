@@ -1432,7 +1432,7 @@ MC2000.Deck = function(group) {
     };
     this.loadTrackBtn.shift = function() {
         this.input = this.shiftedInput;
-    };
+    }; 
     this.loadTrackBtn.unshift();
 
     // Track Gain: pregain/track gain knob or channel filter (alternate)
