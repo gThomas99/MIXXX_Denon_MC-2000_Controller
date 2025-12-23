@@ -1,13 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Denon MC2000 preliminary Mixxx mapping (skeleton)
-  THIS IS A STARTER FILE. Fill in real MIDI status + midino values captured from your hardware.
+  Denon MC2000  Mixxx mapping preset
   schemaVersion="1" = legacy preset format used by existing bundled mappings.
   After editing, reload in Mixxx Preferences > Controllers.
 -->
 <MixxxControllerPreset schemaVersion="1" mixxxVersion="2.5.0">
   <info>
-    <name>Denon MC2000 (User Defined)</name>
+    <name>Denon MC2000 0.1.1 (User Defined)</name>
     <author>Graham Thomas</author>
     <description>Complete Denon MC2000 mapping with transport controls, jog wheels, hotcues, loops, effects, samplers, and LED feedback. Features full button press/release detection via Note On/Off events, shift lock functionality, and Components-based architecture.</description>
     <manualPage>https://github.com/gThomas99/MIXXX_Denon_MC-2000_Controller</manualPage>
@@ -28,6 +27,13 @@
         <group>[Channel1]</group>
         <key>MC2000.playButton</key>
         <status>0x90</status>
+        <midino>0x43</midino>
+        <options><Script-Binding/></options>
+      </control>
+      <control>
+        <group>[Channel1]</group>
+        <key>MC2000.playButton</key>
+        <status>0x80</status>
         <midino>0x43</midino>
         <options><Script-Binding/></options>
       </control>
@@ -72,11 +78,11 @@
         <midino>0x06</midino>
         <options><Script-Binding/></options>
       </control>
-      
-      <!-- Vinyl/CDJ mode button (toggle - only needs Note On) -->
+
+      <!-- Vinyl/CDJ mode button (toggle - only needs Note On) part of jogwheel control -->
       <control>
         <group>[Channel1]</group>
-        <key>MC2000.vinylModeButton</key>
+        <key>MC2000.decks['[Channel1]'].jogWheel.input</key>
         <status>0x90</status>
         <midino>0x04</midino>
         <options><Script-Binding/></options>
@@ -107,6 +113,14 @@
         <midino>0x43</midino>
         <options><Script-Binding/></options>
       </control>
+      <control>
+        <group>[Channel2]</group>
+        <key>MC2000.playButton</key>
+        <status>0x81</status>
+        <midino>0x43</midino>
+        <options><Script-Binding/></options>
+      </control>
+
       
       <!-- Cue button (types.cue - needs both Note On and Note Off) -->
       <control>
@@ -152,7 +166,7 @@
       <!-- Vinyl/CDJ mode button (toggle - only needs Note On) -->
       <control>
         <group>[Channel2]</group>
-        <key>MC2000.vinylModeButton</key>
+        <key>MC2000.decks['[Channel2]'].jogWheel.input</key>
         <status>0x91</status>
         <midino>0x04</midino>
         <options><Script-Binding/></options>
@@ -314,40 +328,79 @@
         <options><Script-Binding/></options>
       </control>
       <!-- The Denon MC2000 controller will send different midi depending on Vinyl mode button -->
-      <!-- The controller does not need to work out if Vinyl button is on or off -->
+      <!-- The controller.js does not need to work out if Vinyl button is on or off -->
       <!-- Jog Wheels CDJ mode pitch bend-->
       <!-- Jog touch vinyl mode calls scratching engine deck 1 (CC message B0+channel) -->
+      
+      <!-- Jog Wheel Pitch Bendencoder Deck 1 -->
       <control>
         <group>[Channel1]</group>
-        <key>MC2000.jogTouch</key>
-        <status>0xB0</status>
-        <midino>0x51</midino>
-        <options><Script-Binding/></options>
-      </control>
-      <!-- Jog wheel rotation deck 1 (CC message) -->
-      <control>
-        <group>[Channel1]</group>
-        <key>MC2000.jogWheel</key>
+        <key>MC2000.decks['[Channel1]'].jogWheel.inputWheel</key>
         <status>0xB0</status>
         <midino>0x52</midino>
         <options><Script-Binding/></options>
       </control>
+      <!-- Jog Wheel Send Ticks to Scratch Engine -->
+      <control>
+        <group>[Channel1]</group>
+        <key>MC2000.decks['[Channel1]'].jogWheel.inputWheel</key>
+        <status>0xB0</status>
+        <midino>0x51</midino>
+        <options><Script-Binding/></options>
+      </control>
+
+      <!-- Scratch Enable/Disable button (MIDI 0x51) Deck 1 Note On and Note Off -->
+      <control>
+        <group>[Channel1]</group>
+        <key>MC2000.decks['[Channel1]'].jogWheel.inputTouch</key>
+        <status>0x90</status>
+        <midino>0x51</midino>
+        <options><Script-Binding/></options>
+      </control>
+      <!-- Note Off -->
+      <control>
+        <group>[Channel1]</group>
+        <key>MC2000.decks['[Channel1]'].jogWheel.inputTouch</key>
+        <status>0x80</status>
+        <midino>0x51</midino>
+        <options><Script-Binding/></options>
+      </control>
+      
       <!-- Jog touch deck 2 (CC message B0+channel) -->
+       <!-- Scratch Enable/Disable button (MIDI 0x51) Deck 2 -->
+        <!-- Jog wheel rotation deck 2 (CC message) -->
       <control>
         <group>[Channel2]</group>
-        <key>MC2000.jogTouch</key>
-        <status>0xB1</status>
-        <midino>0x51</midino>
-        <options><Script-Binding/></options>
-      </control>
-      <!-- Jog wheel rotation deck 2 (CC message) -->
-      <control>
-        <group>[Channel2]</group>
-        <key>MC2000.jogWheel</key>
+        <key>MC2000.decks['[Channel2]'].jogWheel.inputWheel</key>
         <status>0xB1</status>
         <midino>0x52</midino>
         <options><Script-Binding/></options>
       </control>
+      <!-- Jog Wheel Send Ticks to Scratch Engine -->
+      <control>
+        <group>[Channel2]</group>
+        <key>MC2000.decks['[Channel2]'].jogWheel.inputWheel</key>
+        <status>0xB1</status>
+        <midino>0x51</midino>
+        <options><Script-Binding/></options>
+      </control>
+      <!-- Scratch Enable/Disable button (MIDI 0x51) Deck 2 Note On and Note Off -->
+      <control>
+        <group>[Channel2]</group>
+        <key>MC2000.decks['[Channel2]'].jogWheel.inputTouch</key>
+        <status>0x91</status>
+        <midino>0x51</midino>
+        <options><Script-Binding/></options>
+      </control>
+      <control>
+        <group>[Channel2]</group>
+        <key>MC2000.decks['[Channel2]'].jogWheel.inputTouch</key>
+        <status>0x81</status>
+        <midino>0x51</midino>
+        <options><Script-Binding/></options>
+      </control>
+      
+      
       <!-- Shift button (global - needs both Note On and Note Off for held detection) -->
       <control>
         <group>[Master]</group>
