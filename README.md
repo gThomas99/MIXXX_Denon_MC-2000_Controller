@@ -7,6 +7,7 @@
 - [About](#about)
 - [Installation](#Installation)
 - [Usage](#usage)
+- [Configuration](#configuration-options)
 - [Coding Notes](#coding_notes)
 - [Todos](#todos)
 - [Authors](#authors)
@@ -170,6 +171,242 @@ Sample pre-gain is managed by shift functions  of BEATS button/encoder.  The con
 
 ---
 
+## Configuration Options <a name = "configuration-options">"</a>
+
+The `MC2000Config` object at the top of the script controls build-time behavior and feature selection, it allows for alternate build options.
+
+### Configuration Options
+
+#### `useAltPitchBend` (boolean, default: `true`)
+Controls the pitch bend behavior for the jog wheel.
+
+- **`true`**: Uses alternate `<SHIFT>` pitch bend buttons with jump 32 behavior
+- **`false`**: Uses standard forward/back behavior
+
+**Use case**: Enable for more responsive pitch control with larger jumps. Disable for traditional forward/back shuttle behavior.
+
+#### `useAltPlayShift` (boolean, default: `false`)
+Controls the shift modifier behavior for the play button.
+
+- **`true`**: Uses alternate play shift method (reverse roll)
+- **`false`**: Uses standard play shift behavior
+
+**Use case**: Enable for experimental reverse-roll functionality when shift is held during play. Disable for standard shift-play behavior.
+
+#### `pregainAsFilter` (boolean, default: `true`)
+Determines the function of the pregain knob.
+
+- **`true`**: Uses pregain knob as a filter control
+- **`false`**: Uses pregain knob for standard gain adjustment
+
+**Use case**: Enable if you prefer filter control on the pregain knob. Disable for traditional pregain volume control.
+
+#### `setVolumeToSafeDefault` (boolean, default: `true`)
+Controls automatic volume initialization on script load.
+
+- **`true`**: Sets mixer and master volumes to safe default levels during initialization
+- **`false`**: Preserves existing volume levels from previous session
+
+**Use case**: Enable for safer operation (prevents unexpected loud playback). Disable to preserve user-configured levels between sessions.
+
+## Jog Wheel Tuning Constants
+
+These constants control the behavior and sensitivity of the jog wheel scratching and pitch bend functionality.
+
+### Scratch Resolution
+
+#### `jogResolution` (number, default: `125`)
+Ticks per revolution for jog wheel resolution.
+
+- **Higher values** (e.g., 192): Reduce scratch sensitivity, allowing finer control
+- **Lower values** (e.g., 96): Increase scratch sensitivity for faster scratching
+
+**Tuning tip**: Increase from 125 to 192 to halve scratch sensitivity again.
+
+#### `jogRpm` (float, default: `33⅓`)
+Virtual vinyl RPM force applied to the jog wheel simulation.
+
+Controls the "weight" and inertia of the virtual vinyl record. Standard vinyl spins at 33⅓ RPM.
+
+### Scratch Dynamics
+
+#### `jogAlpha` (float, default: `1.0/16` = `0.0625`)
+Inertia coefficient for jog wheel scratch behavior.
+
+- **Lower values** (e.g., 1/32): More inertia, harder to keep spinning
+- **Higher values** (e.g., 1/8): Less inertia, easier to spin freely
+
+**Tuning**: Set to 1/16 for "heavier" vinyl feel with more inertia.
+
+#### `jogBeta` (float, default: `(1.0/16)/64` = `0.0009765625`)
+Damping coefficient that controls how quickly the jog wheel stops spinning.
+
+- **Lower values**: Less damping, longer spin-down time
+- **Higher values**: More damping, quicker stop
+
+**Formula**: Typically set to `jogAlpha / 64` for consistent behavior.
+
+**Tuning tip**: Increase damping to reduce drifting and creeping when scratching.
+
+#### `jogEnableSlipOnScratch` (boolean, default: `false`)
+Enables slip mode during scratching.
+
+- **`true`**: Track position stays fixed while jog wheel moves (vinyl slip effect)
+- **`false`**: Jog wheel position controls track position
+
+**Use case**: Enable for authentic DJ slip effect. Disable for simpler, predictable jog behavior.
+
+### Pitch Bend & Boost
+
+#### `jogPitchScale` (float, default: `1.0/4` = `0.25`)
+Scaling factor for pitch bend when not scratching (CDJ mode, outer wheel).
+
+Controls the sensitivity of pitch adjustment when using the jog wheel for pitch bending rather than scratching.
+
+- **Higher values** (e.g., 0.5): More responsive pitch bending
+- **Lower values** (e.g., 0.1): More subtle pitch control
+
+#### `jogMaxScaling` (float, default: `1.25`)
+Boost multiplier for fast jog wheel spins.
+
+- **`1.0`**: No boost, linear response
+- **`1.25`**: Slight boost for quick spins (default, recommended)
+- **`2.0` or higher**: Aggressive boost for very responsive fast spins
+
+**Use case**: Increase for faster pitch adjustment during quick wheel movements. Keep at 1.0 if you prefer consistent, predictable scaling.
+
+#### `jogCenter` (hex, default: `0x40`)
+MIDI center value for the relative encoder.
+
+This is the neutral/zero point for relative encoder messages. Standard MIDI relative encoders use 0x40 (64 in decimal) as center.
+
+**Only change if your specific hardware uses a different center point.**
+
+## Internal State Variables
+
+These variables track runtime state and should not be directly modified in the config section:
+
+#### `MC2000.pitchRanges` (array, default: `[0.06, 0.08, 0.12, 0.50]`)
+Pitch range multipliers for keylock and pitch controls across 4 sensitivity levels.
+
+#### `MC2000.shiftHeld` (boolean, default: `false`)
+Runtime state: `true` when shift button is currently held down.
+
+#### `MC2000.shiftLock` (boolean, default: `false`)
+Runtime state: `true` when shift lock (sticky shift) is enabled.
+
+#### `MC2000.sampleMode` (object)
+Per-deck sample mode state: `{"[Channel1]": false, "[Channel2]": false}`
+
+## LED Configuration
+
+#### `MC2000.numHotcues` (number, default: `8`)
+Number of hotcue buttons per deck.
+
+Controls how many hotcue LED indicators are active (1-8).
+
+#### `MC2000.leds` (object)
+Mapping of LED symbolic names to MIDI control codes.
+
+**Common LED names**:
+- Transport: `play`, `cue`, `sync`, `keylock`
+- Hotcues: `cue1`, `cue2`, `cue3`, `cue4`
+- Loops: `loopin`, `loopout`, `autoloop`
+- Effects: `fx1_1`, `fx1_2`, `fx1_3`, `fx2_1`, `fx2_2`, `fx2_3`
+- Samplers: `sampler1`–`sampler8`
+- Modes: `vinylmode`, `shiftlock`, `samplemode`
+- Monitor: `monitorcue_l`, `monitorcue_r`
+
+**Caution**: Only modify these values if you've confirmed your hardware uses different MIDI codes.
+
+## Performance & Caching
+
+#### `MC2000.LedManager` (LED State Manager)
+Provides a cache-aware API for LED control that minimizes redundant MIDI traffic.
+
+- **Automatic caching**: Only sends MIDI updates when state actually changes
+- **Bulk operations**: Use `bulk()` method to update multiple LEDs efficiently
+- **State reflection**: Use `reflect()` to sync LEDs with Mixxx engine values
+
+## Debug Mode
+
+#### `MC2000.debugMode` (boolean, default: `false`)
+Enables detailed console logging for troubleshooting.
+
+Set to `true` to see `[MC2000-DEBUG]` messages in the Mixxx console. Useful for:
+- Tracking MIDI message flow
+- Debugging LED state changes
+- Monitoring shift layer transitions
+- Identifying unhandled controller events
+
+## Quick-Start Configuration Examples
+
+### Conservative/Stable Setup
+```javascript
+var MC2000Config = {
+    useAltPitchBend: false,
+    useAltPlayShift: false,
+    pregainAsFilter: false,
+    setVolumeToSafeDefault: true,
+};
+```
+
+### Aggressive/Feature-Rich Setup
+```javascript
+var MC2000Config = {
+    useAltPitchBend: true,
+    useAltPlayShift: true,
+    pregainAsFilter: true,
+    setVolumeToSafeDefault: true,
+};
+```
+
+### Responsive Scratching
+```javascript
+MC2000.jogResolution = 192;    // Finer control
+MC2000.jogAlpha = 1.0/32;      // Heavier feel
+MC2000.jogBeta = (1.0/32)/64;  // More damping
+MC2000.jogMaxScaling = 2.0;    // Aggressive boost
+```
+
+### Smooth Vinyl Simulation
+```javascript
+MC2000.jogEnableSlipOnScratch = true;
+MC2000.jogAlpha = 1.0/16;
+MC2000.jogBeta = (1.0/16)/64;
+MC2000.jogMaxScaling = 1.25;
+```
+
+## Troubleshooting
+
+**Scratching feels too sensitive**
+- Increase `jogResolution` (e.g., 192)
+- Increase `jogAlpha` denominator (e.g., 1/32)
+
+**Scratching feels sluggish**
+- Decrease `jogResolution` (e.g., 96)
+- Decrease `jogAlpha` denominator (e.g., 1/8)
+
+**Jog wheel drifts/creeps**
+- Increase `jogBeta` (more damping)
+- Ensure `jogBeta = jogAlpha / 64` relationship is maintained
+
+**LED updates are slow or stuttering**
+- Enable `MC2000.debugMode = true` to check for excessive MIDI traffic
+- Verify LED Manager caching is working (should see cache hits in logs)
+
+**Shift layer not responding**
+- Check `MC2000.shiftHeld` state in console
+- Enable debug mode to trace shift button MIDI messages
+
+## Modification Workflow
+
+1. **Edit the config** in `Denon-MC2000-scripts.js` (lines ~54-59)
+2. **Save the file**
+3. **Reload controller mapping** in Mixxx: Preferences → Controllers → Reload XML Mapping
+4. **Enable debug mode** if needed: Uncomment/set `MC2000.debugMode = true`
+5. **Check Mixxx console** for `[MC2000-DEBUG]` output
+6. **Adjust values** iteratively until desired behavior is achieved
 ## ⛏️ Coding Notes <a name = "coding_notes"></a>
 
 This section assumes familarity with MIXXX'x documention of user defined controller mappings.
