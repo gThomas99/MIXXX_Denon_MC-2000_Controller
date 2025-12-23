@@ -171,7 +171,7 @@ Sample pre-gain is managed by shift functions  of BEATS button/encoder.  The con
 
 ---
 
-## Configuration Options <a name = "configuration-options">"</a>
+## :computer Configuration Options <a name = "configuration-options">"</a>
 
 The `MC2000Config` object at the top of the script controls build-time behavior and feature selection, it allows for alternate build options.
 
