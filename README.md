@@ -17,18 +17,17 @@
 
 # MIXXX DJ controller for Denon MC2000. 
 
-The Denon MC2000 was marketed as an entry level two deck controller for Serato DJ, the original package came with Serato DJ Intro (now DJ Lite). This project is a Midi mapping and script that allows the Denon MC2000 to be used with MIXXX open source DJ software: this will allow access to more professional features. The controller's features and layout are relatively conventional, this mapping aims to follow the original Serato DJ Intro functions. In most cases you should be able to use the controller on MIXXX by following Denon MC2000 manual. 
+The Denon MC2000 was marketed as an entry level two deck controller for Serato DJ, the original package came with Serato DJ Intro (now DJ Lite). This project is a Midi mapping and script that allows the Denon MC2000 to be used with MIXXX open source DJ software: this will allow access to more professional features. The controller's features and layout are relatively conventional, this mapping aims to follow the original Serato DJ Intro functions but have added options for alternate builds. In most cases you should be able to use the controller on MIXXX by following Denon MC2000 manual. 
 
 The controller was released in 2012 but is no longer available: Denon DJ was acquired by inMusic Brands in 2014 and Denon MC range was phased out. It has not received a lot of attention recently: the user created MIXXX mappings for this controller are old and I couldn't get a lot of commands to work as expected on newer versions of MIXXX. (MIXXX does not produce an official mapping for Denon MC2000). 
 
-This controller was developed near enough from scratch on MIXXX version 2.5.3 on a Windows platform. Extensive use is made of components.js framework with all mappings except jogWheel/JogTouch working through a component object: this was done more for consistency than efficiency. This does mean the mapping is JavaScript heavy and rather verbose. The JogWheel script was lifted from  [Gold-Alex]( https://github.com/gold-alex/)
-: this seemed to offer better control compared to standard offering but is an area that can be improved. (I suspect a lot of people have problems understating how JogWheels are scripted in MIXXX). 
+This controller was developed near enough from scratch on MIXXX version 2.5.3 on a Windows platform. Extensive use is made of components.js framework. This does mean the mapping is JavaScript heavy and rather verbose.  
 
 Only `Denon-MC2000.midi.xml`, `Denon-MC2000-scripts.js` are required by MIXXX, the other files are designed primarily for internal use.
 
 - mixx-debaug.bat is a Windows batch file for starting MIXXX in debug mode. This will display the debug messages embedded in the script as well as midi signals and MIXXX messages
 - Denon-MC2000-MIDI-mapping.csv summaries all the midi code mappings. The first two columns link to pages 17 to 19 in Denon Manual explaining the intended function of each button
-- Denon-MC2000-README.md is AI generated documentation detailing the project status
+- scripts, ai generated python scripts to manage csv mapping file, experimental.
 - util/create-m3u.ps1 creates m3u play list from a directory structure: reads first level directories and then creates playlist from all music file, search is recursive. (Windows Powershell script)
 
 
@@ -173,7 +172,7 @@ Sample pre-gain is managed by shift functions  of BEATS button/encoder.  The con
 
 ## :computer: Configuration Options <a name = "configuration-options">"</a>
 
-The `MC2000Config` object at the top of the script controls build-time behavior and feature selection, it allows for alternate build options.
+The `MC2000Config` object at the top of the script controls build-time behavior and allows for some alternate mappings. 
 
 ### Configuration Options
 
@@ -189,7 +188,7 @@ Controls the pitch bend behavior for the jog wheel.
 Controls the shift modifier behavior for the play button.
 
 - **`true`**: Uses alternate play shift method (reverse roll)
-- **`false`**: Uses standard play shift behavior
+- **`false`**: Uses standard stutter play shift behavior
 
 **Use case**: Enable for experimental reverse-roll functionality when shift is held during play. Disable for standard shift-play behavior.
 
@@ -210,6 +209,7 @@ Controls automatic volume initialization on script load.
 **Use case**: Enable for safer operation (prevents unexpected loud playback). Disable to preserve user-configured levels between sessions.
 
 ## Jog Wheel Tuning Constants
+After config object is a set of user configurable parameter for the jog wheels.
 
 These constants control the behavior and sensitivity of the jog wheel scratching and pitch bend functionality.
 
@@ -249,12 +249,12 @@ Damping coefficient that controls how quickly the jog wheel stops spinning.
 **Tuning tip**: Increase damping to reduce drifting and creeping when scratching.
 
 #### `jogEnableSlipOnScratch` (boolean, default: `false`)
-Enables slip mode during scratching.
+Enables slip mode display during scratching.
 
 - **`true`**: Track position stays fixed while jog wheel moves (vinyl slip effect)
 - **`false`**: Jog wheel position controls track position
 
-**Use case**: Enable for authentic DJ slip effect. Disable for simpler, predictable jog behavior.
+**Use case**: Enable for authentic DJ slip effect in the Mixxx display. Disable for simpler, predictable jog behavior.
 
 ### Pitch Bend & Boost
 
@@ -284,7 +284,7 @@ This is the neutral/zero point for relative encoder messages. Standard MIDI rela
 
 ## Internal State Variables
 
-These variables track runtime state and should not be directly modified in the config section:
+These variables track runtime state. Apart from pitch ranges these should not be changed.
 
 #### `MC2000.pitchRanges` (array, default: `[0.06, 0.08, 0.12, 0.50]`)
 Pitch range multipliers for keylock and pitch controls across 4 sensitivity levels.
@@ -341,7 +341,7 @@ Set to `true` to see `[MC2000-DEBUG]` messages in the Mixxx console. Useful for:
 
 ## Quick-Start Configuration Examples
 
-### Conservative/Stable Setup
+### Denon mapping
 ```javascript
 var MC2000Config = {
     useAltPitchBend: false,
@@ -351,7 +351,7 @@ var MC2000Config = {
 };
 ```
 
-### Aggressive/Feature-Rich Setup
+### ALternaate mapping
 ```javascript
 var MC2000Config = {
     useAltPitchBend: true,
@@ -407,27 +407,37 @@ MC2000.jogMaxScaling = 1.25;
 4. **Enable debug mode** if needed: Uncomment/set `MC2000.debugMode = true`
 5. **Check Mixxx console** for `[MC2000-DEBUG]` output
 6. **Adjust values** iteratively until desired behavior is achieved
+   
 ## ⛏️ Coding Notes <a name = "coding_notes"></a>
 
-This section assumes familarity with MIXXX'x documention of user defined controller mappings.
+This section assumes familarity with Mixxx's documention of user defined controller mappings.
 
-MIXXX provides three general patterns for coding controllers.
+Mixxx provides three general patterns for coding controllers.
 
-- **Direct Midi Mapping**: this is the implest option, built in scripts are used to map commands dirctly and no further scripting is required. 
-- **User Defined JavaScript functions**: Controls are mapped to a function in a user defined Javascript file: a javascrip object is defined in the file which acts the namespace for the controller and functions are added as required to handle various midi codes. The javascript file and object name space are set in midi mapping xml file
+- **Direct Midi Mapping**: this is the simplest option, built in scripts are used to map commands dirctly and no further scripting is required. 
+- **User Defined JavaScript functions**: Controls are mapped to a function in a user defined Javascript file: a javascript object is defined in the file which acts the namespace for the controller and functions are added as required to handle various midi codes. The javascript file and object name space are set in midi mapping xml file. 
 - **ComponentsJS**:  JavaScript on steriods. ComponentsJS is library of objects used in the JavaScript file described above that abstracts the controller components into buttons, pots, encoders and other object classes. The component object are placed in groups objects to create a deck, FX unit and other logical units. 
 
-A controller can use any combination of the patterns described above. JogWheel are problematic as there is no simple direct mapping type due to the different types of hardware and requires a script to work, this is due to the different hardwrae types. Denon MC2000 uses a basic capacative encoder jogwheel with clockwise and anti-clockwise rotations detected around a center value of 0x40 
+
+A controller can use any combination of the patterns described above. I have used the ComponentsJS extensively, although  this is the mode complex method it makes it easier to implement shift mappings and deal with some of the quirks on Denon MC2000. Effectively the controller is an adapter pattern as it converts midi inputs to Mixxx engine command.
+
+JogWheel are problematic as they require a Javascript mapping, there is no direct control. Initially I found this very confusing and judging from forum comments this is a common problem. Much of the confusion in my opinion is due to lack of a clear explanation. The Denon MC2000 uses a standard capacative encoder jogwheel: it should be thought of as two controls a toggle button and an encoder. When you touch the top of the wheel it acts as button to enable  scratch mode and then switch to jog mode when when you stop touching the top of the wheel: this is hanled by wheelTouch function in the controller code. When you turn the wheel it will send 'ticks' to show the wheel is being turned in clockwise or anticlockwise direction, the value of the 'tick' also increases with the movement speed: the wheelTurn button then sends the ticks to either the Mixxx scratch or jog scratch control detirmined by whether the the top of the wheel is being touched. This the  expected behaviour of 'vinyl mode' jog wheel: turning on the side runs jog mode while turning on the top runs scratch mode.
+
+The Denon MC2000 also does some internal handling for jog wheels depending on whether the 'vinyl mode' is enabled. In vinyl mode different sets on midi codes are sent depending on whether the wheel is turned on the side or top, both midi codes are sent to inputWheel function which has internal logic to send to either the scratch or jog control. This also means the 'vinyl mode' button on the controller is there to enable or disabled the jog wheel button: disabling 'vinyl mode' means all wheel turns are sent as jog wheel midi codes and no button codes are sent when touching the top of the wheel.
+
+However this does not explain why a Javascript function is required for the jog wheels as the above behaviour could be implemented by direct engine controls. The main reason why a javascript function is required is due to how the controller sends movement 'ticks': some controllers send negative and positive numbers to show clockwise or anti clockwise movement while others always send postive numbers with turn direction detirmined by subtracting a center value: this logic although simple has to be implemented in JavaScript to then send the correct value to Mixxx. The MC2000 takes the later apporoach with clockwise and anti-clockwise rotations detected around a center value of 0x40.
+
+The jog wheels is implemented as jogwheel componentJS and inputWheel and inputTouch functions are re-implemented. The 'vinyl mode' button is mapped to input fuction but only records internal state as the functionality is handled directly winget install Python.Python.3.12by Denon controller.
 
 The Denon MC2000 controller also has a number of idiosyncrasies that make it difficult to code and resulted in the extensive use of component objects
 
 - Different midi codes are sent when a key is pressed (midi note on) and released (midi note off). This means all buttons are handled by javaScript components to deal with this and each button has two xml entries to call the same code
 
-- LEDS have a different set of midi codes and do not respond to MIXXX standard output (reception) calls. LED control is managed by the output function of the component which makes calls to an LED api that deal with the internal LED logic. 
+- LEDS have a different set of midi codes and do not respond to Mixxx standard output (reception) calls. LED control is managed by the output function of the component which makes calls to an LED api that deal with the internal LED logic. 
 
 - Some midi codes do not follow an expected pattern. The main example is the Sample buttons which have a non-sequential order making it difficult to use standard array logic. This was resolved by creating wrapper function to a component call: The midi mapping calls a standard javaScript function that then works out the component method to call.
 
-It took me two attempts to write this controller. On the first attempt I was struggling to understand the different coding patterns and the peculiarities of Denon MC2000: it was just a mess. On the second attempt I used ai coding tools, prompting  'write a mixxx controller for Denon MC2000' (ok it was a little bit more specific) resulted in a workable skeleton and rapid development of the rest of the controller. One result of this approach was the use of wrapper functions, the initial skeletons lifted code from other Denon controller and the ai was then coaxed to use the components library. Although the use of wrapper handler functions are is open to debate my conclusion is 'if it ain't broke don't fix it'.
+It took me two attempts to write this controller. On the first attempt I was struggling to understand the different coding patterns and the peculiarities of Denon MC2000: it was just a mess. On the second attempt I used ai coding tools, prompting  'write a mixxx controller for Denon MC2000' (ok it was a little bit more specific) resulted in a workable skeleton and rapid development of the rest of the controller. One result of this approach was the use of wrapper functions, the initial skeletons lifted code from other Denon controller and the ai was then coaxed to use the components library. (The wrapper functions are at the end of the controller code). Although the use of wrapper handler functions are open to debate and serve no real value I have kept them in on the basis 'if it ain't broke don't fix it'.
 
 - [MIXXX mapping Controls](https://manual.mixxx.org/2.5/en/chapters/appendix/mixxx_controls)
 - [MIXXX Midi scripting wiki](https://github.com/mixxxdj/mixxx/wiki/Midi-Scripting)

@@ -11,7 +11,7 @@ Denon No,Denon label,MIDI No,Command Name (XML/JS),Mixxx Control,Group,Control T
 1,,B0-5A,fx2_effect2_meta,[EffectRack1_EffectUnit2_Effect2]meta,[EffectRack1_EffectUnit2_Effect2],ControlPotMeter (0-1),FX Unit 2 Effect 2 meta knob,–,No shift layer
 1,,B0-5B,fx2_effect3_meta,[EffectRack1_EffectUnit2_Effect3]meta,[EffectRack1_EffectUnit2_Effect3],ControlPotMeter (0-1),FX Unit 2 Effect 3 meta knob,–,No shift layer
 2,Beat Tap button,91-40,beatTapBtn,[ChannelN]bpm_tap,[Channel2],Binary,Tap tempo/BPM detection,–,No shift layer
-2,,90-40,beatTapBtn,[ChannelN]bpm_tap,[Channel1],Binary,Tap tempo/BPM detection,–,No shift layer
+2,,90-40,beatTap1,[ChannelN]bpm_tap,[Channel1],Binary,Tap tempo/BPM detection,–,No shift layer
 2,Beat Tap button,91-40,beatTapBtn,[ChannelN]bpm_tap,[Channel2],Binary,Tap tempo/BPM detection,–,No shift layer
 2,Beats select/Sample Volume knob,B0-58,fx1_wetDry,[EffectRack1_EffectUnit1]mix,[EffectRack1_EffectUnit1],Relative CC (Encoder),FX Unit 1 wet/dry mix encoder,–,No shift layer
 2,,B0-5C,fx2_wetDry,[EffectRack1_EffectUnit2]mix,[EffectRack1_EffectUnit2],Relative CC (Encoder),FX Unit 2 wet/dry mix encoder,–,No shift layer
@@ -35,11 +35,11 @@ Denon No,Denon label,MIDI No,Command Name (XML/JS),Mixxx Control,Group,Control T
 4,Auto loop/exit and loop size adjustment,91-1D,reloopExit,[ChannelN]reloop_toggle,[Channel2],Binary,Toggle loop on/off,–,Same behavior shifted
 4,Auto loop/exit and loop size adjustment,91-6A,loopDouble,[ChannelN]loop_double,[Channel2],Binary,Double loop length,–,No shift layer
 4,Auto loop/exit and loop size adjustment,91-69,loopHalve,[ChannelN]loop_halve,[Channel2],Binary,Halve loop length,–,No shift layer
-5,Loop Point Setting button (IN/OUT),91-51,loopIn,[ChannelN]loop_in,[Channel2],Binary,Set/move loop in point,[ChannelN]reloop_toggle,Shift: re-enable/exit last loop
+5,Loop Point Setting button (IN/OUT),91-51,decks['[Channel2]'].jogWheel.inputTouch,[ChannelN]loop_in,[Channel2],Binary,Set/move loop in point,[ChannelN]reloop_toggle,Shift: re-enable/exit last loop
 5,Loop Point Setting button (IN/OUT),91-39,loopOut,[ChannelN]loop_out,[Channel2],Binary,Set/move loop out point,[ChannelN]loop_exit,Shift: exit current loop
-5,Loop Point Setting button (IN/OUT),90-51,loopIn,[ChannelN]loop_in,[Channel1],Binary,Set/move loop in point,[ChannelN]reloop_toggle,Shift: re-enable/exit last loop
+5,Loop Point Setting button (IN/OUT),90-51,decks['[Channel1]'].jogWheel.inputTouch,[ChannelN]loop_in,[Channel1],Binary,Set/move loop in point,[ChannelN]reloop_toggle,Shift: re-enable/exit last loop
 5,Loop Point Setting button (IN/OUT),90-39,loopOut,[ChannelN]loop_out,[Channel1],Binary,Set/move loop out point,[ChannelN]loop_exit,Shift: exit current loop
-5,Loop Point Setting button (IN/OUT),91-51,loopIn,[ChannelN]loop_in,[Channel2],Binary,Set/move loop in point,[ChannelN]reloop_toggle,Shift: re-enable/exit last loop
+5,Loop Point Setting button (IN/OUT),91-51,decks['[Channel2]'].jogWheel.inputTouch,[ChannelN]loop_in,[Channel2],Binary,Set/move loop in point,[ChannelN]reloop_toggle,Shift: re-enable/exit last loop
 5,Loop Point Setting button (IN/OUT),91-39,loopOut,[ChannelN]loop_out,[Channel2],Binary,Set/move loop out point,[ChannelN]loop_exit,Shift: exit current loop
 6,Pan adjustment Knob,B0-43,headphoneMix,[Master]headMix,[Master],ControlPotMeter (0-1),Headphone cue/main mix,–,No shift layer
 7,Hot cue button (1/2/3/4),90-17,hotcuePad,[ChannelN]hotcue_1_activate,[Channel1],Binary,Hotcue 1 activate/set,[ChannelN]hotcue_1_clear,Shift: delete hotcue 1
@@ -51,14 +51,14 @@ Denon No,Denon label,MIDI No,Command Name (XML/JS),Mixxx Control,Group,Control T
 7,Hot cue button (1/2/3/4),91-19,hotcuePad,[ChannelN]hotcue_3_activate,[Channel2],Binary,Hotcue 3 activate/set,[ChannelN]hotcue_3_clear,Shift: delete hotcue 3
 7,Hot cue button (1/2/3/4),91-20,hotcuePad,[ChannelN]hotcue_4_activate,[Channel2],Binary,Hotcue 4 activate/set,[ChannelN]hotcue_4_clear,Shift: delete hotcue 4
 8,Headphone output volume (MONITOR PHONES),B0-44,headphoneVolume,[Master]headGain,[Master],ControlPotMeter (0-5),Headphone output volume,–,No shift layer
-10,Key Lock button (KEY LOCK),90-06,keylockButton,[ChannelN]keylock,[Channel1],Binary,Toggle key lock (master tempo,–,No shift layer
-10,Key Lock button (KEY LOCK),91-06,keylockButton,[ChannelN]keylock,[Channel2],Binary,Toggle key lock (master tempo,–,No shift layer
+10,Key Lock button (KEY LOCK),90-06,keylockButton,[ChannelN]keylock,[Channel1],Binary,Toggle key lock (master tempo,[ChannelN]rateRange,Shift: cycle pitch range (6% -> 8% -> 12% -> 50%)
+10,Key Lock button (KEY LOCK),91-06,keylockButton,[ChannelN]keylock,[Channel2],Binary,Toggle key lock (master tempo,[ChannelN]rateRange,Shift: cycle pitch range (6% -> 8% -> 12% -> 50%)
 11,Jog Wheel,91-52,jogTouch,N/A (Script-only),[Channel2],Binary,Jog wheel touch detection,–,No shift layer
-11,Jog Wheel,B1-51,jogWheel,N/A (Script-only),[Channel2],Relative CC,Jog wheel rotation (relative,–,No shift layer
-11,Jog Wheel,90-52,jogTouch,N/A (Script-only),[Channel1],Binary,Jog wheel touch detection,–,No shift layer
+11,Jog Wheel,B1-51,decks['[Channel2]'].jogWheel.inputWheel,N/A (Script-only),[Channel2],Relative CC,Jog wheel rotation (relative,–,No shift layer
+11,Jog Wheel,90-52,fx2_effect2_toggle,N/A (Script-only),[Channel1],Binary,Jog wheel touch detection,–,No shift layer
 11,Jog Wheel,91-52,jogTouch,N/A (Script-only),[Channel2],Binary,Jog wheel touch detection,–,No shift layer
-11,Jog Wheel,B0-51,jogWheel,N/A (Script-only),[Channel1],Relative CC,Jog wheel rotation (relative,–,No shift layer
-11,Jog Wheel,B1-51,jogWheel,N/A (Script-only),[Channel2],Relative CC,Jog wheel rotation (relative,–,No shift layer
+11,Jog Wheel,B0-51,decks['[Channel1]'].jogWheel.inputWheel,N/A (Script-only),[Channel1],Relative CC,Jog wheel rotation (relative,–,No shift layer
+11,Jog Wheel,B1-51,decks['[Channel2]'].jogWheel.inputWheel,N/A (Script-only),[Channel2],Relative CC,Jog wheel rotation (relative,–,No shift layer
 12,Pitch Fader Slider,E0-00,pitchFader,[ChannelN]rate,[Channel1],ControlPotMeter (-1 to 1),Pitch/tempo slider,–,No shift layer
 12,Pitch Fader Slider,E1-00,pitchFader,[ChannelN]rate,[Channel2],ControlPotMeter (-1 to 1),Pitch/tempo slider,–,No shift layer
 13,Beat sync button (SYNC),90-6B,syncButton,[ChannelN]sync_enabled,[Channel2],Binary,Sync tempo and phase,[ChannelN]beatsync / [ChannelN]sync_enabled,Unshift: one-shot beatsync
@@ -68,10 +68,10 @@ Denon No,Denon label,MIDI No,Command Name (XML/JS),Mixxx Control,Group,Control T
 14,Cue Button,91-42,cueButton,[ChannelN]cue_default,[Channel2],Binary,CDJ mode cue button,[ChannelN]cue_gotoandplay,Shift: momentary goto & play cue
 14,Cue Button,90-42,cueButton,[ChannelN]cue_default,[Channel1],Binary,CDJ mode cue button,[ChannelN]cue_gotoandplay,Shift: momentary goto & play cue
 14,Cue Button,91-42,cueButton,[ChannelN]cue_default,[Channel2],Binary,CDJ mode cue button,[ChannelN]cue_gotoandplay,Shift: momentary goto & play cue
-15,Play / pause button,91-43,playButton,[ChannelN]play,[Channel2],Binary,Toggle play/pause,–,No shift layer
+15,Play / pause button,91-43,playButton,[ChannelN]play,[Channel2],Binary,Toggle play/pause,[ChannelN]cue_gotoandplay,Shift: momentary goto & play cue
 15,Play / pause button,91-43,playButton,[ChannelN]play,[Channel2],Binary,Toggle play/pause (alt shift),[ChannelN]reverseroll,Shift+Play: momentary reverse roll
-15,Play / pause button,90-43,playButton,[ChannelN]play,[Channel1],Binary,Toggle play/pause,–,No shift layer
-15,Play / pause button,91-43,playButton,[ChannelN]play,[Channel2],Binary,Toggle play/pause,–,No shift layer
+15,Play / pause button,90-43,playButton,[ChannelN]play,[Channel1],Binary,Toggle play/pause,[ChannelN]cue_gotoandplay,Shift: momentary goto & play cue
+15,Play / pause button,91-43,playButton,[ChannelN]play,[Channel2],Binary,Toggle play/pause,[ChannelN]cue_gotoandplay,Shift: momentary goto & play cue
 17,Pitch bend adjustment (PITCH BEND -/+),91-0C,pitchBendUp,[ChannelN]rate_temp_up,[Channel2],Binary,Temporary pitch bend up,–,No shift layer
 17,Pitch bend adjustment (PITCH BEND -/+),91-0D,pitchBendDown,[ChannelN]rate_temp_down,[Channel2],Binary,Temporary pitch bend down,–,No shift layer
 17,Pitch bend adjustment (PITCH BEND -/+),90-0C,pitchBendUp,[ChannelN]rate_temp_up,[Channel1],Binary,Temporary pitch bend up,–,No shift layer
@@ -104,7 +104,7 @@ Denon No,Denon label,MIDI No,Command Name (XML/JS),Mixxx Control,Group,Control T
 26,Library Back Button,B0-30,libraryFocusBackwardBtn,MC2000.libraryFocusBackwardComp.input,[Library],Binary,Move focus to previous library pane,–,No shift layer
 26,Library Forward Button,B0-29,libraryFocusForwardBtn,MC2000.libraryFocusForwardComp.input,[Library],Binary,Move focus to next library pane,–,No shift layer
 26,Library Go To Item,B0-28,libraryGoToItemBtn,MC2000.libraryGoToItemComp.input,[Library],Binary,Go to selected item in library,–,No shift layer
-27,Shift button (SHIFT),90-60,shiftButton,N/A (Script-only),[Master],Binary,Global shift modifier. Shift + Cue for shift lock/unlock,Modifier,Hold to access shifted behaviors
+27,Shift button (SHIFT),90-60,toggleShift,N/A (Script-only),[Master],Binary,Global shift modifier. Shift + Cue for shift lock/unlock,Modifier,Hold to access shifted behaviors
 28,Monitor Cue button (MONITOR CUE),91-05,pflButton,[ChannelN]pfl,[Channel2],Binary,Headphone cue (PFL,–,No shift layer
 28,Monitor Cue button (MONITOR CUE),90-01,pflButton,[ChannelN]pfl,[Channel1],Binary,Headphone cue (PFL,–,No shift layer
 29,Master Output Volume (MASTER LEVEL),B0-19,masterVolume,[Master]gain,[Master],ControlPotMeter (0-5),Master output volume,–,No shift layer

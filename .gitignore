@@ -25,6 +25,7 @@
 *.log
 *.sql
 *.sqlite
+*.bak
 
 # OS generated files #
 ######################
@@ -40,6 +41,7 @@ Thumbs.db
 # Directories #
 ##############
 node_modules/
+iceman
 dist/
 build/
 coverage/
