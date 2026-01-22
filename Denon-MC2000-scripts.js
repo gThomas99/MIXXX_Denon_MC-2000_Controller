@@ -79,6 +79,9 @@ MC2000.jogPitchScale   = 1.0/4;      // scale for non-scratch jog (pitch bend)
 //    If you want a slight boost at quick spins, try 2 or 3.
 MC2000.jogMaxScaling   = 1.25;       // slight boost at quick spins
 MC2000.jogCenter       = 0x40;       // relative center value
+// Shift-mode jog wheel parameters for coarse seeking
+MC2000.jogShiftScalingDivisor = 10;  // divisor for tick count scaling in shift mode
+MC2000.jogShiftCoarseFactor = 20;    // multiplier for coarse seeking in shift mode
 
 //////////////////////////////
 // Internal state           //
@@ -1343,6 +1346,7 @@ MC2000.Deck = function(group) {
         var movement = this.getMovement(value);
 
         if (movement === 0) return; // No movement, ignore
+        MC2000.debugLog("jogWheel: Shift mode - movement=" + movement + ", tickCount=" + this.tickCount);
         // Ensure scratch disabled when scrubbing
         //this.disableScratch();
         this.tickUpdate();
@@ -1353,12 +1357,13 @@ MC2000.Deck = function(group) {
         var coarseFactor = MC2000.jogShiftCoarseFactor || 20; // coarse multiplier for shifted scrub
         
         // SCRUB MODE (paused) when shift is held: coarser seeking
-        //MC2000.debugLog("jogWheel (shift): Scrub mode, tickCount=" + this.tickCount + ", effectiveScaling=" + effectiveScaling);
+        MC2000.debugLog("jogWheel (shift): Scrub mode, tickCount=" + this.tickCount + ", effectiveScaling=" + effectiveScaling + ", coarseFactor=" + coarseFactor);
         var pos = engine.getValue("[Channel" + this.deck + "]", "playposition");
         pos += (movement * effectiveScaling * this.jogScrubScaling * coarseFactor);
         if (pos < 0) pos = 0;
         if (pos > 1) pos = 1;
         engine.setValue("[Channel" + this.deck + "]", "playposition", pos);
+        MC2000.debugLog("jogWheel (shift): New playposition=" + pos);
         
     };
 
@@ -1385,9 +1390,30 @@ MC2000.Deck = function(group) {
 
     // Preserve a reference to the normal wheel handler and wire up shift/unshift
     this.jogWheel.inputWheelNormal = this.jogWheel.inputWheel;
-    this.jogWheel.inputWheel = this.jogWheel.inputWheelNormal;
-    this.jogWheel.unshift = function() { this.inputWheel = this.inputWheelNormal; };
-    this.jogWheel.shift = function() { this.inputWheel = this.inputWheelShift; };
+    this.jogWheel.inputWheelNormal = this.jogWheel.inputWheel;
+    
+    // Store the original inputWheel to replace it with a dispatcher
+    var self = this;
+    var originalInputWheel = this.jogWheel.inputWheel;
+    
+    // Create dispatcher that calls the appropriate handler based on shift state
+    this.jogWheel.inputWheel = function(channel, control, value, status, group) {
+        if (MC2000.isShiftActive()) {
+            MC2000.debugLog("jogWheel: Dispatch to inputWheelShift (shift active)");
+            return self.jogWheel.inputWheelShift.call(this, channel, control, value, status, group);
+        } else {
+            MC2000.debugLog("jogWheel: Dispatch to inputWheelNormal (shift inactive)");
+            return self.jogWheel.inputWheelNormal.call(this, channel, control, value, status, group);
+        }
+    };
+    
+    // shift/unshift now just update a flag (kept for backward compatibility)
+    this.jogWheel.unshift = function() { 
+        MC2000.debugLog("jogWheel.unshift() called on deck " + this.deck);
+    };
+    this.jogWheel.shift = function() { 
+        MC2000.debugLog("jogWheel.shift() called on deck " + this.deck);
+    };
     
     //overide default input method , this will receive vinylMode button press
     //output handler not required as this is handled by hardware
