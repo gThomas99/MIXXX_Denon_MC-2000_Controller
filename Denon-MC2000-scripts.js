@@ -80,8 +80,9 @@ MC2000.jogPitchScale   = 1.0/4;      // scale for non-scratch jog (pitch bend)
 MC2000.jogMaxScaling   = 1.25;       // slight boost at quick spins
 MC2000.jogCenter       = 0x40;       // relative center value
 // Shift-mode jog wheel parameters for coarse seeking
-MC2000.jogShiftScalingDivisor = 10;  // divisor for tick count scaling in shift mode
-MC2000.jogShiftCoarseFactor = 20;    // multiplier for coarse seeking in shift mode
+MC2000.jogShiftScalingDivisor = 10;  // divisor for tick count scaling in shift mode (deprecated)
+MC2000.jogShiftCoarseFactor = 20;    // multiplier for coarse seeking in shift mode (deprecated)
+MC2000.jogScrubScaling = 0.01;       // scaling factor for fine playposition adjustment in shift mode (0-1 range)
 
 //////////////////////////////
 // Internal state           //
@@ -1327,6 +1328,7 @@ MC2000.Deck = function(group) {
 
     //process this.ticks, if no meovement is detetected is last 150ms then counter set to 0
     //higher tick count (over thre) uses higher speed factor for jog wheel movement
+    // this is required for acceleration effect when scratching
     this.jogWheel.tickUpdate = function() {
         var now = Date.now();
         var timeDiff = now - this.lastTickTime;
@@ -1351,19 +1353,17 @@ MC2000.Deck = function(group) {
         //this.disableScratch();
         this.tickUpdate();
 
-        // SCRUB MODE (paused) when shift is held: coarser seeking
-        var speedFactorShift = Math.min(1 + this.tickCount / MC2000.jogShiftScalingDivisor, this.jogMaxScaling * 1.5);
-        var effectiveScaling = (this.tickCount > 3) ? speedFactorShift : 1;
-        var coarseFactor = MC2000.jogShiftCoarseFactor || 20; // coarse multiplier for shifted scrub
-        
-        // SCRUB MODE (paused) when shift is held: coarser seeking
-        MC2000.debugLog("jogWheel (shift): Scrub mode, tickCount=" + this.tickCount + ", effectiveScaling=" + effectiveScaling + ", coarseFactor=" + coarseFactor);
+        // COARSE SEEK MODE when shift is held: use jogScrubScaling for fine playposition adjustment
+        // This should be SLOWER and FINER than normal seeking - ideal for precise track positioning
+        // Formula: movement * scaling - simpler and more predictable than the complex calculation
+        MC2000.debugLog("jogWheel (shift): Coarse seek mode, tickCount=" + this.tickCount + ", movement=" + movement);
         var pos = engine.getValue("[Channel" + this.deck + "]", "playposition");
-        pos += (movement * effectiveScaling * this.jogScrubScaling * coarseFactor);
+        var seekAmount = movement * MC2000.jogScrubScaling; // Simple, fine-grained seeking
+        pos += seekAmount;
         if (pos < 0) pos = 0;
         if (pos > 1) pos = 1;
         engine.setValue("[Channel" + this.deck + "]", "playposition", pos);
-        MC2000.debugLog("jogWheel (shift): New playposition=" + pos);
+        MC2000.debugLog("jogWheel (shift): seekAmount=" + seekAmount + ", newPos=" + pos);
         
     };
 

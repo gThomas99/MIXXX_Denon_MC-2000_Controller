@@ -282,6 +282,22 @@ This is the neutral/zero point for relative encoder messages. Standard MIDI rela
 
 **Only change if your specific hardware uses a different center point.**
 
+### Shift Mode / Fast Search
+
+#### `jogScrubScaling` (float, default: `0.01`)
+Scaling factor for fine playposition adjustment when shift is held (fast search mode).
+
+Controls how much the track position advances per jog wheel tick in shift mode. The playposition value ranges from 0 to 1 (start to end of track).
+
+- **`0.01`**: Default (1% per tick) - precise control for accurate seeking
+- **`0.005`**: Half as sensitive (0.5% per tick) - pixel-level precision
+- **`0.02`**: 2x faster (2% per tick) - balanced seeking
+- **`0.05`**: 5x faster (5% per tick) - rapid track navigation
+
+**Use case**: Decrease for pixel-level precision when searching for specific cue points. Increase for faster track navigation when holding shift.
+
+**Example**: At default 0.01, turning the jog wheel 10 times while holding shift = 10% track position (0.1).
+
 ## Internal State Variables
 
 These variables track runtime state. Apart from pitch ranges these should not be changed.
