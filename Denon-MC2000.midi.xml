@@ -246,7 +246,7 @@
         <group>[Channel2]</group>
         <key>MC2000.trackGain</key>
         <status>0xB1</status>
-        <midino>0x01</midino>
+        <midino>0x0C</midino>
         <options><Script-Binding/></options>
       </control>
       

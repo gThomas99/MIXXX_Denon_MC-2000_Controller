@@ -82,9 +82,9 @@ Denon No,Denon label,MIDI No,Command Name (XML/JS),Mixxx Control,Group,Control T
 18,Channel Fader knob,B0-05,volumeFader,[ChannelN]volume,[Channel1],ControlPotMeter (0-1),Channel volume fader,–,No shift layer
 18,Channel Fader knob,B1-05,volumeFader,[ChannelN]volume,[Channel2],ControlPotMeter (0-1),Channel volume fader,–,No shift layer
 19,Cross fader,B0-16,crossfader,[Master]crossfader,[Master],ControlPotMeter (-1 to 1),Crossfader position,–,No shift layer
-20,Channel input Level Adjustment (LEVEL),B1-01,trackGain,[ChannelN]pregain,[Channel2],ControlPotMeter (0-4),Track gain/pregain knob,–,No shift layer
+20,Channel input Level Adjustment (LEVEL),B1-0C,trackGain,[ChannelN]pregain,[Channel2],ControlPotMeter (0-4),Track gain/pregain knob,–,No shift layer
 20,Channel input Level Adjustment (LEVEL),B0-01,trackGain,[ChannelN]pregain,[Channel1],ControlPotMeter (0-4),Track gain/pregain knob,–,No shift layer
-20,Channel input Level Adjustment (LEVEL),B1-01,trackGain,[ChannelN]pregain,[Channel2],ControlPotMeter (0-4),Track gain/pregain knob,–,No shift layer
+20,Channel input Level Adjustment (LEVEL),B1-0C,trackGain,[ChannelN]pregain,[Channel2],ControlPotMeter (0-4),Track gain/pregain knob,–,No shift layer
 21,"Load Button (LOAD A, LOAD B)",91-64,LoadSelectedTrack,[ChannelN]LoadSelectedTrack,[Channel2],Binary,Load track from library,–,No shift layer
 22,Channel isolator EQ (HI/MID/LOW),B1-02,eqHigh,[EqualizerRack1_[ChannelI]_Effect1]parameter3,[Channel2],ControlPotMeter (0-4),High EQ knob,–,No shift layer
 22,Channel isolator EQ (HI/MID/LOW),B1-03,eqMid,[EqualizerRack1_[ChannelI]_Effect1]parameter2,[Channel2],ControlPotMeter (0-4),Mid EQ knob,–,No shift layer
