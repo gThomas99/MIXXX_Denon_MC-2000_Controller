@@ -1802,8 +1802,9 @@ MC2000.Deck = function(group) {
     };
     this.loopDoubleBtn.unshift();
 
-    // Reloop/Exit: Toggles loop on/off if loop exists, or creates beatloop if no loop
-    // Shift: Creates 8-beat loop instead of 4-beat
+    // Reloop/Exit: Exits an active loop while playing; otherwise discards any
+    // previous loop and creates a new beatloop at the current position
+    // Shift: Reloop/exit the existing loop (jumps back into it)
     this.reloopExitBtn = new components.Button({
         group: group,
         type: components.Button.prototype.types.push,
@@ -1817,7 +1818,10 @@ MC2000.Deck = function(group) {
             engine.setValue(group, "reloop_toggle", 1);
             return;
         }
-        // Start autoloop using Mixxx's configured beatloop size
+        // Discard the previous loop first, otherwise beatloop_activate keeps its
+        // start point and jumps back into the old loop
+        engine.setValue(group, "loop_remove", 1);
+        // Start autoloop at the current position using Mixxx's configured beatloop size
         engine.setValue(group, "beatloop_activate", 1);
     };
     this.reloopExitBtn.shiftedInput = function(_ch,_ctrl,value,_status,group){
